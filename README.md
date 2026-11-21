@@ -51,6 +51,8 @@ GPL-3.0（见 LICENSE）。开发者：BD1BWG。技术支持：support@fire-tnt.
 本项目采用 **GNU General Public License v3.0（GPL-3.0）** 开源，全文见 [LICENSE](LICENSE)。
 
 - 版权人：BD1BWG（2026）
+- 源码仓库：<https://github.com/GOhaochen/printbox>
+- 隐私政策：[docs/privacy-policy.md](docs/privacy-policy.md)
 - 第三方组件许可：见 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)
 - 安装包构建：`bash scripts/build.sh`（需 Go 1.26+、ImageMagick、ugcli）
 
