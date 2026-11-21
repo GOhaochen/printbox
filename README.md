@@ -1,4 +1,4 @@
-# 打印（PrintBox）
+# 打印扫描（Print & Scan）
 
 通过绿联 NAS 直连局域网打印机，直接在 NAS 上打印 PDF 与图片，无需先下载到手机。
 

@@ -15,7 +15,7 @@ import (
 	"printbox/internal/store"
 )
 
-const version = "0.2.3"
+const version = "0.2.4"
 
 func main() {
 	addr := flag.String("addr", ":21020", "监听地址")

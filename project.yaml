@@ -1,6 +1,6 @@
 spec_version: "2.1"
 app_id: com.bd1bwg.print
-version: 0.2.3
+version: 0.2.4
 support_arch: [amd64, arm64]
 product_series: [nasync]
 supports: [pc, app]
@@ -30,12 +30,12 @@ technical_support_link:
 
 i18n:
   en-US:
-    name: Print
-    description: Print PDFs and images directly from your NAS to a local network printer.
+    name: Print & Scan
+    description: Print documents and scan from your NAS to local network printers and scanners.
     author: BD1BWG
     publisher: BD1BWG
   zh-CN:
-    name: 打印
-    description: 通过 NAS 直连局域网打印机，直接打印 PDF 与图片。
+    name: 打印扫描
+    description: 通过 NAS 直连局域网打印机与扫描仪，打印文档、扫描文件，一站式处理。
     author: BD1BWG
     publisher: BD1BWG
