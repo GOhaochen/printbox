@@ -307,12 +307,14 @@ function renderFileActions() {
   const box = $('#file-actions');
   if (!box) return;
   box.innerHTML = `
+    <button class="btn small" id="btn-select-files">选择</button>
     <button class="btn small" id="btn-recent">最近</button>
     <button class="btn small" id="btn-favs">收藏</button>
     <button class="btn small" id="btn-refresh">刷新</button>
     <button class="btn small primary" id="btn-upload">上传</button>
     <input type="file" id="file-input" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.webp">
     <button class="btn small" id="btn-url">链接</button>`;
+  $('#btn-select-files').onclick = () => toggleSelectMode();
   $('#btn-recent').onclick = () => showQuick2('recents');
   $('#btn-favs').onclick = () => showQuick2('favorites');
   $('#btn-refresh').onclick = () => loadDir(state.cwd);
@@ -374,7 +376,7 @@ function openPrintDialog(files) {
   const isImage = /\.(jpe?g|png|webp|gif|bmp)$/i.test(first.path);
   const isPDF = /\.pdf$/i.test(first.path);
   const firstExt = fileExt(first.name || first.path);
-  const isOffice = ['xlsx', 'xls', 'docx'].includes(firstExt);
+  const isOffice = ['xlsx', 'xls', 'docx', 'doc'].includes(firstExt);
   const preview = isImage
     ? `<img src="/api/files/content?path=${encodeURIComponent(first.path)}" alt="">`
     : isOffice
@@ -451,7 +453,7 @@ function openPrintDialog(files) {
       let created = 0;
       for (const f of files) {
         const ext = fileExt(f.name || f.path);
-        if (ext === 'xlsx' || ext === 'xls' || ext === 'docx') {
+        if (ext === 'xlsx' || ext === 'xls' || ext === 'docx' || ext === 'doc') {
           btn.textContent = '正在解析 Office 文档…';
           const { blobs } = await renderOfficeToBlobs(f.path, (i, n) => {
             btn.textContent = `正在生成第 ${i}/${n} 页…`;
@@ -538,7 +540,13 @@ async function renderOfficeToBlobs(path, onProgress) {
       const body = rows.map(row => '<tr>' + row.map(cell => `<td>${escapeHtml(cell == null ? '' : String(cell))}</td>`).join('') + '</tr>').join('');
       return `<h3>${escapeHtml(name)}</h3><table>${body}</table>`;
     }).join('<hr style="page-break-after:always;border:none;height:24px">');
-  } else if (ext === 'docx') {
+  } else if (ext === 'docx' || ext === 'doc') {
+    // .doc 若实际为 docx（zip 结构）也可解析；旧版二进制 .doc 给出明确提示
+    const head = new Uint8Array(buf.slice(0, 4));
+    const isZip = head[0] === 0x50 && head[1] === 0x4b;
+    if (ext === 'doc' && !isZip) {
+      throw new Error('该 .doc 为旧版 Word 格式，浏览器无法解析；请另存为 .docx 或 PDF 后打印');
+    }
     const mammoth = await loadScriptOnce('/vendor/office/mammoth.browser.min.js', 'mammoth');
     const result = await mammoth.convertToHtml({ arrayBuffer: buf });
     html = result.value || '<p>（空文档）</p>';
@@ -734,7 +742,7 @@ async function renderScan(view) {
       const list = r.scanners || [];
       if (!list.length) { hint.textContent = `搜索完成（${sec} 秒）：未发现扫描仪`; return; }
       hint.innerHTML = `搜索完成（${sec} 秒），发现 ${list.length} 台：` + list.map(x =>
-        `<button class="btn small" data-sip="${esc(x.ip)}">${esc(x.ip)} · ${esc(x.model)}</button>`).join(' ');
+        `<button class="btn small" data-sip="${esc(x.ip)}">${esc(x.ip)} · ${esc(x.model)}${x.from_printer ? ' ⭐' : ''}</button>`).join(' ');
       $$('#sc-found [data-sip]').forEach(b => b.onclick = () => {
         ipInput.value = b.dataset.sip;
         checkScannerStatus();

@@ -15,7 +15,7 @@
   --radius: 12px;
   --radius-lg: 16px;
   --shadow: 0 1px 3px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .04);
-  --tab-h: 56px;
+  --tab-h: 64px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -96,10 +96,10 @@ body {
 }
 @media (max-width: 780px) { #tabbar { display: flex; } }
 .tab {
-  flex: 1; border: none; background: transparent; color: var(--muted); font-size: 10.5px;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; cursor: pointer;
+  flex: 1; border: none; background: transparent; color: var(--muted); font-size: 11px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer;
 }
-.tab svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.tab svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .tab.active { color: var(--primary); }
 
 /* ---------- 文件页 ---------- */
@@ -240,3 +240,23 @@ body {
 /* ---------- 文件类型图标 ---------- */
 .file-ico { width: 62px; height: 62px; display: block; }
 .file-card .thumb .file-ico { width: 62px; height: 62px; }
+
+/* ---------- 手机端顶栏与文件网格（贴近系统文件管理器） ---------- */
+@media (max-width: 780px) {
+  #topbar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+  .brand { padding: 2px 4px; }
+  .brand-name { display: none; }
+  .brand-mark { font-size: 10.5px; padding: 5px 8px; }
+  .searchbox { order: 3; flex: 1 1 100%; max-width: none; }
+  .searchbox input { padding: 10px 14px; border-radius: 12px; }
+  .top-actions { order: 2; }
+  #topbar [data-nav="#/scan"], #btn-select { display: none; }
+  #btn-printer { padding: 7px 12px; }
+  #btn-printer #printer-label { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .file-card .thumb { height: 96px; }
+  .file-card .fname { font-size: 12px; }
+  .file-card .fsub { font-size: 10.5px; }
+  .toolbar { gap: 6px; }
+  .file-card .file-ico { width: 52px; height: 52px; }
+}

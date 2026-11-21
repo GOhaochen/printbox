@@ -14,35 +14,57 @@ import (
 
 // scannerFound 是发现到的扫描仪。
 type scannerFound struct {
-	IP    string `json:"ip"`
-	Model string `json:"model"`
-	URL   string `json:"url"`
+	IP          string `json:"ip"`
+	Model       string `json:"model"`
+	URL         string `json:"url"`
+	FromPrinter bool   `json:"from_printer"`
 }
 
 // handleDiscoverScanners 探测局域网中支持 eSCL 的扫描仪。
 func (s *Server) handleDiscoverScanners(w http.ResponseWriter, r *http.Request) {
-	hosts := localHosts()
 	var mu sync.Mutex
 	var found []scannerFound
+	seen := map[string]bool{}
+
+	// 优先检查已添加的打印机是否支持扫描（多数一体机同时具备扫描功能）
+	if ps, err := s.st.ListPrinters(); err == nil {
+		var wg sync.WaitGroup
+		for _, p := range ps {
+			if p.IP == "" || seen[p.IP] {
+				continue
+			}
+			seen[p.IP] = true
+			wg.Add(1)
+			go func(ip string) {
+				defer wg.Done()
+				if model, ok := probeScanner(ip); ok {
+					mu.Lock()
+					found = append(found, scannerFound{IP: ip, Model: model + "（打印机内置扫描）", URL: "http://" + ip, FromPrinter: true})
+					mu.Unlock()
+				}
+			}(p.IP)
+		}
+		wg.Wait()
+	}
+
+	hosts := localHosts()
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 48)
 	for _, ip := range hosts {
+		if seen[ip] {
+			continue
+		}
+		seen[ip] = true
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			c := escl.New("http://" + ip)
-			c.HTTP.Timeout = 900 * time.Millisecond
-			caps, err := c.GetCapabilities()
-			if err != nil {
-				return
+			if model, ok := probeScanner(ip); ok {
+				mu.Lock()
+				found = append(found, scannerFound{IP: ip, Model: model, URL: "http://" + ip})
+				mu.Unlock()
 			}
-			_ = caps
-			model := "eSCL 扫描仪"
-			mu.Lock()
-			found = append(found, scannerFound{IP: ip, Model: model, URL: "http://" + ip})
-			mu.Unlock()
 		}(ip)
 	}
 	wg.Wait()
@@ -50,6 +72,16 @@ func (s *Server) handleDiscoverScanners(w http.ResponseWriter, r *http.Request) 
 		found = []scannerFound{}
 	}
 	writeJSON(w, 200, map[string]any{"scanners": found, "scanned": len(hosts)})
+}
+
+// probeScanner 探测某个地址是否为 eSCL 扫描仪。
+func probeScanner(ip string) (string, bool) {
+	c := escl.New("http://" + ip)
+	c.HTTP.Timeout = 900 * time.Millisecond
+	if _, err := c.GetCapabilities(); err != nil {
+		return "", false
+	}
+	return "eSCL 扫描仪", true
 }
 
 // handleScannerStatus 查询扫描仪状态。
