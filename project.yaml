@@ -1,0 +1,41 @@
+spec_version: "2.1"
+app_id: com.bd1bwg.print
+version: 0.2.1
+support_arch: [amd64, arm64]
+product_series: [nasync]
+supports: [pc, app]
+tag_types: [utility]
+
+start_cmd: bin/qsl_print -addr=:21020
+port: 21020
+proxy_path: api
+open_type: inner
+depend_fw_version: 1.13.0.0000
+
+permissions:
+  - NETWORK.ACCESS_INTERNET
+
+allow_add_access_path: true
+only_admin: false
+support_migration: true
+
+privacy_policy_link:
+  - https://example.com/printbox/privacy
+license_agreement_link:
+  - https://www.gnu.org/licenses/gpl-3.0.html
+source_code_link:
+  - https://example.com/printbox/source
+technical_support_link:
+  - mailto:support@fire-tnt.cn
+
+i18n:
+  en-US:
+    name: Print
+    description: Print PDFs and images directly from your NAS to a local network printer.
+    author: BD1BWG
+    publisher: BD1BWG
+  zh-CN:
+    name: 打印
+    description: 通过 NAS 直连局域网打印机，直接打印 PDF 与图片。
+    author: BD1BWG
+    publisher: BD1BWG

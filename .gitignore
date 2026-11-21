@@ -1,0 +1,19 @@
+# 运行数据与产物
+_devdata/
+bin/
+.bin/
+build_dir/
+build/
+rootfs_common/
+rootfs_amd64/
+rootfs_arm64/
+.gocache/
+.gotmp/
+tmp_debug/
+docs/tmp/
+
+# 日志与临时文件
+*.log
+.run*.log
+web/__*.html
+.DS_Store
