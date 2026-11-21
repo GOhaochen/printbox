@@ -236,3 +236,7 @@ body {
   border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite;
   vertical-align: -2px; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- 文件类型图标 ---------- */
+.file-ico { width: 62px; height: 62px; display: block; }
+.file-card .thumb .file-ico { width: 62px; height: 62px; }

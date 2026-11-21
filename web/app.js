@@ -223,6 +223,34 @@ function renderBreadcrumb() {
   $$('#crumbs [data-crumb]').forEach(b => b.onclick = () => loadDir(b.dataset.crumb));
 }
 
+// 文件类型图标（自绘，风格接近系统文件管理）
+function fileExt(name) {
+  const m = /\.([a-zA-Z0-9]+)$/.exec(name || '');
+  return m ? m[1].toLowerCase() : '';
+}
+
+function folderSVG() {
+  return `<svg viewBox="0 0 64 64" class="file-ico"><path d="M6 18a4 4 0 0 1 4-4h14l5 5h25a4 4 0 0 1 4 4v25a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="#5b9cf5"/><path d="M6 24h52v24a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="#7fb4ff"/></svg>`;
+}
+
+function fileIconSVG(ext) {
+  const colors = {
+    pdf: '#e53935', doc: '#1e88e5', docx: '#1e88e5',
+    xls: '#43a047', xlsx: '#43a047', ods: '#43a047',
+    ppt: '#fb8c00', pptx: '#fb8c00',
+    txt: '#78909c', csv: '#43a047', md: '#78909c',
+  };
+  const labels = { docx: 'DOC', doc: 'DOC', xlsx: 'XLS', xls: 'XLS', ods: 'ODS', pptx: 'PPT', ppt: 'PPT', pdf: 'PDF' };
+  const color = colors[ext] || '#90a4ae';
+  const label = labels[ext] || (ext || 'FILE').toUpperCase().slice(0, 4);
+  return `<svg viewBox="0 0 64 64" class="file-ico">
+    <path d="M14 4h24l12 12v40a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4z" fill="#fff" stroke="#d0d7de" stroke-width="1.5"/>
+    <path d="M38 4l12 12H38z" fill="#eef2f6"/>
+    <rect x="8" y="38" width="34" height="15" rx="3" fill="${color}"/>
+    <text x="25" y="49.5" text-anchor="middle" font-size="9.5" font-family="Arial, sans-serif" font-weight="700" fill="#fff">${label}</text>
+  </svg>`;
+}
+
 function renderFilterBar() {
   const bar = $('#filterbar');
   if (!bar) return;
@@ -246,16 +274,15 @@ function renderFilesView() {
     grid.innerHTML = entries.map(e => {
       if (e.is_dir) {
         return `<div class="file-card" data-dir="${esc(e.path)}">
-          <div class="thumb" style="font-size:34px">📁</div>
+          <div class="thumb">${folderSVG()}</div>
           <div class="meta"><div class="fname">${esc(e.name)}</div><div class="fsub">文件夹</div></div>
         </div>`;
       }
       const sel = state.selected.has(e.path);
+      const ext = fileExt(e.name);
       const thumb = e.kind === 'image'
         ? `<img loading="lazy" src="/api/files/content?path=${encodeURIComponent(e.path)}" alt="">`
-        : e.kind === 'pdf' ? `<span class="badge">PDF</span>`
-        : e.kind === 'office' ? `<span class="badge office">OFFICE</span>`
-        : `<span class="badge" style="background:#8e8e93">文件</span>`;
+        : fileIconSVG(ext);
       const star = state.favorites && state.favorites.includes(e.path) ? '<span class="star">★</span>' : '';
       return `<div class="file-card ${sel ? 'selected' : ''}" data-file="${esc(e.path)}" data-kind="${esc(e.kind)}">
         <div class="thumb">${thumb}${state.selectMode ? '<span class="pick"></span>' : ''}${star}</div>
@@ -269,10 +296,6 @@ function renderFilesView() {
       if (card.dataset.dir) { loadDir(card.dataset.dir); return; }
       const path = card.dataset.file;
       if (state.selectMode) { toggleSelect(path); return; }
-      if (card.dataset.kind === 'office') {
-        toast('暂不支持直接打印 Office 文件，请先转换为 PDF', 3200);
-        return;
-      }
       openPrintDialog([{ path, name: card.querySelector('.fname').textContent }]);
     };
     card.oncontextmenu = e => { e.preventDefault(); openFileMenu(card.dataset.file); };
@@ -350,9 +373,13 @@ function openPrintDialog(files) {
   const first = files[0];
   const isImage = /\.(jpe?g|png|webp|gif|bmp)$/i.test(first.path);
   const isPDF = /\.pdf$/i.test(first.path);
+  const firstExt = fileExt(first.name || first.path);
+  const isOffice = ['xlsx', 'xls', 'docx'].includes(firstExt);
   const preview = isImage
     ? `<img src="/api/files/content?path=${encodeURIComponent(first.path)}" alt="">`
-    : `<iframe src="/api/files/content?path=${encodeURIComponent(first.path)}"></iframe>`;
+    : isOffice
+      ? `<div class="hint" style="padding:20px;text-align:center">Office 文件将在打印时解析为图片<br>（表格/文字排版会尽量保留）</div>`
+      : `<iframe src="/api/files/content?path=${encodeURIComponent(first.path)}"></iframe>`;
   const m = $('#modal');
   m.innerHTML = `<div class="modal-box">
     <h3 style="margin:0 0 12px;font-size:16px">打印${files.length > 1 ? `（${files.length} 个文件）` : ''}</h3>
@@ -423,7 +450,26 @@ function openPrintDialog(files) {
     try {
       let created = 0;
       for (const f of files) {
-        if (/\.pdf$/i.test(f.path)) {
+        const ext = fileExt(f.name || f.path);
+        if (ext === 'xlsx' || ext === 'xls' || ext === 'docx') {
+          btn.textContent = '正在解析 Office 文档…';
+          const { blobs } = await renderOfficeToBlobs(f.path, (i, n) => {
+            btn.textContent = `正在生成第 ${i}/${n} 页…`;
+          });
+          for (const { page, blob } of blobs) {
+            btn.textContent = `正在上传第 ${page} 页…`;
+            const fd = new FormData();
+            fd.append('file', new File([blob], `${(f.name || 'document').replace(/\.[^.]+$/, '')}-p${page}.jpg`, { type: 'image/jpeg' }));
+            const up = await api('/api/files/upload', { method: 'POST', body: fd });
+            await api('/api/print', { method: 'POST', body: { ...body, pages: '', file_path: up.path } });
+            created++;
+          }
+          continue;
+        }
+        if (ext === 'ppt' || ext === 'pptx') {
+          throw new Error('PPT 暂不支持直接打印，请先转换为 PDF');
+        }
+        if (ext === 'pdf') {
           btn.textContent = '正在准备 PDF…';
           const { blobs } = await renderPdfToBlobs(f.path, body.pages, (i, n) => {
             btn.textContent = `正在渲染 ${i}/${n} 页…`;
@@ -457,6 +503,84 @@ function openPrintDialog(files) {
       if (input) input.placeholder = `全部（共 ${doc.numPages} 页）；例如 1-3,5`;
       try { doc.destroy(); } catch (e) {}
     }).catch(() => {});
+  }
+}
+
+function loadScriptOnce(src, globalName) {
+  return new Promise((resolve, reject) => {
+    if (window[globalName]) { resolve(window[globalName]); return; }
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve(window[globalName]);
+    s.onerror = () => reject(new Error('加载组件失败：' + src));
+    document.head.appendChild(s);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// 把 Office 文档解析为 HTML，再渲染为分页 JPEG
+async function renderOfficeToBlobs(path, onProgress) {
+  const ext = fileExt(path);
+  const res = await fetch('/api/files/content?path=' + encodeURIComponent(path));
+  if (!res.ok) throw new Error('读取文件失败');
+  const buf = await res.arrayBuffer();
+  let html = '';
+  if (ext === 'xlsx' || ext === 'xls') {
+    const XLSX = await loadScriptOnce('/vendor/office/xlsx.full.min.js', 'XLSX');
+    const wb = XLSX.read(buf, { type: 'array' });
+    const sheets = (wb.SheetNames || []).slice(0, 6);
+    html = sheets.map(name => {
+      const ws = wb.Sheets[name];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+      const body = rows.map(row => '<tr>' + row.map(cell => `<td>${escapeHtml(cell == null ? '' : String(cell))}</td>`).join('') + '</tr>').join('');
+      return `<h3>${escapeHtml(name)}</h3><table>${body}</table>`;
+    }).join('<hr style="page-break-after:always;border:none;height:24px">');
+  } else if (ext === 'docx') {
+    const mammoth = await loadScriptOnce('/vendor/office/mammoth.browser.min.js', 'mammoth');
+    const result = await mammoth.convertToHtml({ arrayBuffer: buf });
+    html = result.value || '<p>（空文档）</p>';
+  } else {
+    throw new Error('暂不支持该类型，请先转换为 PDF');
+  }
+
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:0;top:0;z-index:-1;width:1240px;box-sizing:border-box;background:#fff;color:#111;padding:56px;font:16px/1.65 "Microsoft YaHei","PingFang SC",Arial,sans-serif;';
+  host.innerHTML = `<style>
+    h1,h2,h3,h4{font-size:20px;margin:14px 0 8px}
+    p{margin:8px 0}
+    table{border-collapse:collapse;width:100%;margin:8px 0 18px}
+    td{border:1px solid #bbb;padding:5px 7px;font-size:12.5px;word-break:break-all;vertical-align:top}
+    hr{border:none;border-top:1px dashed #ccc;margin:18px 0}
+    img{max-width:100%}
+  </style>` + html;
+  document.body.appendChild(host);
+  try {
+    const html2canvas = await loadScriptOnce('/vendor/office/html2canvas.min.js', 'html2canvas');
+    const width = 1240;
+    const canvas = await html2canvas(host, { scale: 1, backgroundColor: '#ffffff', width, windowWidth: width, logging: false });
+    const pageH = Math.round(width * 1.414);
+    const total = Math.max(1, Math.ceil(canvas.height / pageH));
+    const blobs = [];
+    for (let i = 0; i < total; i++) {
+      const c = document.createElement('canvas');
+      c.width = canvas.width;
+      c.height = Math.min(pageH, canvas.height - i * pageH);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(canvas, 0, i * pageH, canvas.width, c.height, 0, 0, c.width, c.height);
+      const blob = await new Promise((resolve, reject) => {
+        c.toBlob(b => b ? resolve(b) : reject(new Error('生成页面图片失败')), 'image/jpeg', 0.92);
+      });
+      blobs.push({ page: i + 1, blob });
+      if (onProgress) onProgress(i + 1, total);
+    }
+    return { blobs, total };
+  } finally {
+    host.remove();
   }
 }
 

@@ -7,7 +7,7 @@ export GOCACHE=${GOCACHE:-$ROOT/.gocache}
 export GOTMPDIR=${GOTMPDIR:-$ROOT/.gotmp}
 mkdir -p "$GOCACHE" "$GOTMPDIR"
 BUILD=${BUILD_NUM:-1}
-VERSION=0.2.2
+VERSION=0.2.3
 UGCLI=${UGCLI:-$HOME/.local/bin/ugcli}
 
 echo "==> 清理旧产物"
@@ -22,6 +22,7 @@ echo "==> 复制前端资源"
 cp web/index.html web/app.js web/style.css rootfs_common/www/
 mkdir -p rootfs_common/www/vendor
 cp -a web/vendor/pdfjs rootfs_common/www/vendor/
+cp -a web/vendor/office rootfs_common/www/vendor/
 
 echo "==> 生成图标（现代风格）"
 if [ -f docs/icon-modern.png ]; then
