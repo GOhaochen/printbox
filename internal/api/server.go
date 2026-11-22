@@ -35,6 +35,7 @@ type Config struct {
 	PdftoppmPath string
 	LibDir       string
 	TmpDir       string
+	TmpPrintDir  string
 }
 
 // Server 是 HTTP 服务器。
@@ -61,7 +62,9 @@ func New(cfg Config, st *store.Store) *Server {
 	if abs, err := filepath.Abs(cfg.DataDir); err == nil {
 		roots = append(roots, abs)
 	}
-	s := &Server{cfg: cfg, st: st, fm: files.New(roots, cfg.UploadDir), mux: http.NewServeMux()}
+	fm := files.New(roots, cfg.UploadDir)
+	fm.TempDir = cfg.TmpPrintDir
+	s := &Server{cfg: cfg, st: st, fm: fm, mux: http.NewServeMux()}
 	s.conv = pdfconv.Converter{Pdftoppm: cfg.PdftoppmPath, LibDir: cfg.LibDir, TmpDir: cfg.TmpDir}
 	s.routes()
 	return s
@@ -103,6 +106,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/files/content", s.handleFileContent)
 	m.HandleFunc("POST /api/files/upload", s.handleUpload)
 	m.HandleFunc("POST /api/files/fetch-url", s.handleFetchURL)
+	m.HandleFunc("POST /api/files/save-copy", s.handleSaveCopy)
 
 	m.HandleFunc("GET /api/favorites", s.handleListFavorites)
 	m.HandleFunc("POST /api/favorites", s.handleAddFavorite)
@@ -202,10 +206,12 @@ func (s *Server) processJob(job *store.Job) {
 	if err := s.doPrint(printerIP, fileName, data, format, sourcePath, job.Pages, opt); err != nil {
 		_ = s.st.UpdateJobStatus(job.ID, "failed", err.Error())
 		log.Printf("打印失败 %s：%v", job.ID, err)
+		s.cleanupTemp(job.FilePath)
 		return
 	}
 	_ = s.st.UpdateJobStatus(job.ID, "done", "")
 	log.Printf("打印完成 %s（%s）", job.ID, fileName)
+	s.cleanupTemp(job.FilePath)
 }
 
 // doPrint 按打印机支持的格式发送任务；PDF 不被支持时渲染为 JPEG 逐页打印。
@@ -339,6 +345,65 @@ func pngToJPEG(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("JPEG 编码失败")
 	}
 	return buf.Bytes(), nil
+}
+
+// cleanupTemp 删除临时打印文件（位于临时打印目录下的文件）。
+func (s *Server) cleanupTemp(path string) {
+	if path == "" || path == "__test_page__" || s.cfg.TmpPrintDir == "" {
+		return
+	}
+	absPath, err1 := filepath.Abs(path)
+	absTmp, err2 := filepath.Abs(s.cfg.TmpPrintDir)
+	if err1 != nil || err2 != nil {
+		return
+	}
+	if strings.HasPrefix(absPath, absTmp+string(os.PathSeparator)) {
+		if err := os.Remove(absPath); err == nil {
+			log.Printf("已删除临时打印文件：%s", absPath)
+		}
+	}
+}
+
+// handleSaveCopy 将临时文件保存到用户选择的目录。
+func (s *Server) handleSaveCopy(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path   string `json:"path"`
+		Target string `json:"target_dir"`
+	}
+	if err := readJSON(r, &body); err != nil || body.Path == "" || body.Target == "" {
+		writeErr(w, 400, "缺少参数")
+		return
+	}
+	src, err := os.Open(body.Path)
+	if err != nil {
+		writeErr(w, 404, "源文件不存在")
+		return
+	}
+	defer src.Close()
+	dir := filepath.Clean(body.Target)
+	st, err := os.Stat(dir)
+	if err != nil || !st.IsDir() {
+		writeErr(w, 400, "目标目录不存在")
+		return
+	}
+	name := filepath.Base(body.Path)
+	dstPath := filepath.Join(dir, name)
+	if _, err := os.Stat(dstPath); err == nil {
+		ext := filepath.Ext(name)
+		base := strings.TrimSuffix(name, ext)
+		dstPath = filepath.Join(dir, fmt.Sprintf("%s-%s%s", base, time.Now().Format("20060102-150405"), ext))
+	}
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		writeErr(w, 403, "目标目录不可写："+err.Error())
+		return
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		writeErr(w, 500, "复制失败："+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"path": dstPath, "name": filepath.Base(dstPath)})
 }
 
 func (s *Server) protocolOf(ip string) string {
@@ -761,28 +826,40 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	saved, err := s.fm.SaveUpload(header.Filename, file)
+	temp := r.URL.Query().Get("temp") == "1" || r.FormValue("temp") == "1"
+	var saved string
+	if temp {
+		saved, err = s.fm.SaveTemp(header.Filename, file)
+	} else {
+		saved, err = s.fm.SaveUpload(header.Filename, file)
+	}
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"path": saved, "name": filepath.Base(saved)})
+	writeJSON(w, 200, map[string]any{"path": saved, "name": filepath.Base(saved), "temp": temp})
 }
 
 func (s *Server) handleFetchURL(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		URL string `json:"url"`
+		URL  string `json:"url"`
+		Temp bool   `json:"temp"`
 	}
 	if err := readJSON(r, &body); err != nil || body.URL == "" {
 		writeErr(w, 400, "缺少 url")
 		return
 	}
-	saved, err := s.fm.FetchURL(body.URL)
+	temp := r.URL.Query().Get("temp") == "1" || body.Temp
+	targetDir := ""
+	if temp {
+		targetDir = s.cfg.TmpPrintDir
+	}
+	saved, err := s.fm.FetchURLTo(body.URL, targetDir)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]string{"path": saved, "name": filepath.Base(saved)})
+	writeJSON(w, 200, map[string]any{"path": saved, "name": filepath.Base(saved), "temp": temp})
 }
 
 // ---------- 收藏与最近 ----------

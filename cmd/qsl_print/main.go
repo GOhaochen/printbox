@@ -15,7 +15,7 @@ import (
 	"printbox/internal/store"
 )
 
-const version = "0.2.14"
+const version = "0.2.15"
 
 func main() {
 	addr := flag.String("addr", ":21020", "监听地址")
@@ -53,9 +53,12 @@ func main() {
 	}
 	tmpDir := filepath.Join(*dataDir, "tmp")
 	_ = os.MkdirAll(tmpDir, 0o755)
+	tmpPrintDir := filepath.Join(*dataDir, "tmp-print")
+	_ = os.MkdirAll(tmpPrintDir, 0o755)
 	cfg := api.Config{
 		DataDir:      *dataDir,
 		TmpDir:       tmpDir,
+		TmpPrintDir:  tmpPrintDir,
 		SharedDir:    *sharedDir,
 		WebDir:       *webDir,
 		Version:      version,

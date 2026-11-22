@@ -368,21 +368,23 @@ function renderFileActions() {
   $('#file-input').onchange = async () => {
     const files = Array.from($('#file-input').files || []);
     if (!files.length) return;
+    const uploaded = [];
     for (const f of files) {
       const fd = new FormData();
       fd.append('file', f);
-      try { await api('/api/files/upload', { method: 'POST', body: fd }); } catch (e) { toast(f.name + '：' + e.message); }
+      try {
+        const r = await api('/api/files/upload?temp=1', { method: 'POST', body: fd });
+        uploaded.push({ path: r.path, name: r.name, temp: true });
+      } catch (e) { toast(f.name + '：' + e.message); }
     }
-    toast('上传完成');
-    loadDir(state.cwd);
+    if (uploaded.length) openPrintDialog(uploaded);
   };
   $('#btn-url').onclick = async () => {
     const url = prompt('输入文件链接（http/https）');
     if (!url) return;
     try {
-      const r = await api('/api/files/fetch-url', { method: 'POST', body: { url } });
-      toast('已下载：' + r.name);
-      loadDir(state.cwd);
+      const r = await api('/api/files/fetch-url?temp=1', { method: 'POST', body: { url } });
+      openPrintDialog([{ path: r.path, name: r.name, temp: true }]);
     } catch (e) { toast(e.message); }
   };
 }
@@ -481,8 +483,10 @@ function openPrintDialog(files) {
         <label class="field" style="flex-direction:row;align-items:center;gap:8px">
           <input type="checkbox" id="pr-save" style="width:auto"> <span>保存为默认参数</span>
         </label>
+        ${files[0].temp ? '<div class="hint" style="margin-top:4px">该文件为临时文件：打印后自动删除；如需保留请点「保存到…」。</div>' : ''}
         <div class="actions">
           <button class="btn" id="pr-cancel">取消</button>
+          <button class="btn" id="pr-save">保存到…</button>
           <button class="btn" id="pr-test">打印测试页</button>
           <button class="btn primary" id="pr-ok">打印</button>
         </div>
@@ -512,6 +516,19 @@ function openPrintDialog(files) {
   const dupSel = $('#pr-duplex');
   if (dupSel) { dupSel.onchange = dupToggle; dupToggle(); }
   $('#pr-cancel').onclick = () => m.classList.remove('open');
+  const saveBtn = $('#pr-save');
+  if (saveBtn) saveBtn.onclick = async () => {
+    const dir = await pickDirectory((state.roots[0] || {}).path || '');
+    if (!dir) return;
+    try {
+      let saved = 0;
+      for (const f of files) {
+        await api('/api/files/save-copy', { method: 'POST', body: { path: f.path, target_dir: dir } });
+        saved++;
+      }
+      toast(`已保存 ${saved} 个文件到 ${dir}`, 3600);
+    } catch (e) { toast(e.message, 3600); }
+  };
   $('#pr-test').onclick = async () => {
     try {
       await api('/api/print/test', { method: 'POST', body: { printer_ip: $('#pr-printer').value } });
@@ -951,6 +968,44 @@ async function renderPdfToBlobs(path, pageInput, onProgress) {
   }
 }
 
+// 目录选择器：返回选中的目录路径（取消返回 null）
+function pickDirectory(startPath) {
+  return new Promise(resolve => {
+    const m = $('#modal');
+    let cur = startPath || (state.roots[0] && state.roots[0].path) || '';
+    const render = async () => {
+      let subdirs = [], parent = '';
+      try {
+        const d = await api('/api/files/list?path=' + encodeURIComponent(cur));
+        cur = d.path;
+        parent = d.parent;
+        subdirs = (d.entries || []).filter(e => e.is_dir);
+      } catch (e) { toast(e.message); }
+      const roots = state.roots.map(r => `<button class="btn small" data-dp-root="${esc(r.path)}">${esc(r.name)}</button>`).join('');
+      m.innerHTML = `<div class="modal-box"><h3 style="margin:0 0 10px;font-size:16px">选择保存位置</h3>
+        <div class="hint" style="margin-bottom:8px;word-break:break-all">${esc(cur)}</div>
+        <div class="actions" style="margin-bottom:8px">${parent ? '<button class="btn small" id="dp-up">↑ 上一级</button>' : ''}${roots}</div>
+        <div class="list" id="dp-list" style="max-height:40vh;overflow:auto"></div>
+        <div class="actions" style="justify-content:flex-end;margin-top:12px">
+          <button class="btn" id="dp-cancel">取消</button>
+          <button class="btn primary" id="dp-ok">保存到此处</button>
+        </div></div>`;
+      const box = $('#dp-list');
+      if (box) {
+        box.innerHTML = subdirs.length ? subdirs.map(d => `<div class="rowitem" data-dp-dir="${esc(d.path)}" style="cursor:pointer"><span class="grow"><div class="fname">${esc(d.name)}</div><div class="fsub">文件夹</div></span></div>`).join('') : '<div class="empty">没有子文件夹</div>';
+        $$('#dp-list [data-dp-dir]').forEach(el => el.onclick = () => { cur = el.dataset.dpDir; render(); });
+      }
+      $$('[data-dp-root]').forEach(el => el.onclick = () => { cur = el.dataset.dpRoot; render(); });
+      const up = $('#dp-up');
+      if (up) up.onclick = () => { cur = parent; render(); };
+      $('#dp-cancel').onclick = () => { m.classList.remove('open'); resolve(null); };
+      $('#dp-ok').onclick = () => { m.classList.remove('open'); resolve(cur); };
+    };
+    m.classList.add('open');
+    render().catch(() => {});
+  });
+}
+
 function openFileMenu(path) {
   const m = $('#modal');
   m.innerHTML = `<div class="modal-box" style="max-width:420px">
@@ -1098,6 +1153,7 @@ async function renderScan(view) {
         </div>`;
       $('#sc-print').onclick = () => openPrintDialog([{ path: r.path, name: r.name }]);
       $('#sc-again').onclick = () => $('#sc-start').click();
+      openPrintDialog([{ path: r.path, name: r.name }]);
     } catch (e) { toast(e.message, 5000); $('#sc-progress').textContent = ''; }
     finally { btn.disabled = false; btn.textContent = '开始扫描'; }
   };
@@ -1296,11 +1352,15 @@ async function renderSettings(view) {
     const inp = document.createElement('input');
     inp.type = 'file'; inp.multiple = true; inp.accept = '.pdf,.jpg,.jpeg,.png,.webp';
     inp.onchange = async () => {
+      const uploaded = [];
       for (const f of Array.from(inp.files || [])) {
         const fd = new FormData(); fd.append('file', f);
-        try { await api('/api/files/upload', { method: 'POST', body: fd }); } catch (e) { toast(f.name + '：' + e.message); }
+        try {
+          const r = await api('/api/files/upload?temp=1', { method: 'POST', body: fd });
+          uploaded.push({ path: r.path, name: r.name, temp: true });
+        } catch (e) { toast(f.name + '：' + e.message); }
       }
-      toast('上传完成'); loadDir(state.cwd);
+      if (uploaded.length) openPrintDialog(uploaded);
     };
     inp.click();
   };

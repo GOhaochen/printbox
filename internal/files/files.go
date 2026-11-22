@@ -24,8 +24,9 @@ type Entry struct {
 
 // Manager 管理可浏览的根目录。
 type Manager struct {
-	Roots    []string
+	Roots     []string
 	UploadDir string
+	TempDir   string
 }
 
 // New 创建管理器。
@@ -164,8 +165,43 @@ func (m *Manager) SaveUpload(name string, r io.Reader) (string, error) {
 	return path, nil
 }
 
+// SaveTemp 保存到临时打印目录（打印后可自动删除）。
+func (m *Manager) SaveTemp(name string, r io.Reader) (string, error) {
+	dir := m.TempDir
+	if dir == "" {
+		dir = m.UploadDir
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	safe := filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	if safe == "" || safe == "." {
+		safe = fmt.Sprintf("temp-%d", time.Now().UnixNano())
+	}
+	path := filepath.Join(dir, safe)
+	if _, err := os.Stat(path); err == nil {
+		ext := filepath.Ext(safe)
+		base := strings.TrimSuffix(safe, ext)
+		path = filepath.Join(dir, fmt.Sprintf("%s-%d%s", base, time.Now().UnixNano(), ext))
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, r); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // FetchURL 下载网络文件并保存到上传目录（限制 100MB）。
 func (m *Manager) FetchURL(url string) (string, error) {
+	return m.FetchURLTo(url, m.UploadDir)
+}
+
+// FetchURLTo 下载网络文件到指定目录（限制 100MB）。
+func (m *Manager) FetchURLTo(url, targetDir string) (string, error) {
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		return "", fmt.Errorf("仅支持 http/https 链接")
 	}
@@ -182,7 +218,11 @@ func (m *Manager) FetchURL(url string) (string, error) {
 	if name == "" || name == "/" || name == "." {
 		name = fmt.Sprintf("download-%d", time.Now().UnixNano())
 	}
-	dir := filepath.Join(m.UploadDir, time.Now().Format("2006-01"))
+	base := targetDir
+	if base == "" {
+		base = m.UploadDir
+	}
+	dir := filepath.Join(base, time.Now().Format("2006-01"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
