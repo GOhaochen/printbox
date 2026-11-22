@@ -1,6 +1,6 @@
 spec_version: "2.1"
 app_id: com.bd1bwg.print
-version: 0.2.5
+version: 0.2.7
 support_arch: [amd64, arm64]
 product_series: [nasync]
 supports: [pc, app]

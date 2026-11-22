@@ -43,11 +43,14 @@ type PrinterStatus struct {
 
 // Options 是打印参数。
 type Options struct {
-	Copies int
-	Paper  string // A4 / Letter
-	Duplex bool
-	Color  bool
-	Scale  string // fit / actual
+	Copies      int
+	Paper       string // A4 / Letter
+	Duplex      bool
+	DuplexMode  string // long / short
+	Color       bool
+	Scale       string // fit / actual
+	Quality     string // draft / normal / high
+	Orientation string // portrait / landscape
 }
 
 // Client 是 IPP 打印机客户端。
@@ -218,9 +221,26 @@ func (c *Client) Print(filename string, data []byte, format string, opt Options)
 	jobAttrs = append(jobAttrs, attr(tagKeyword, "media", paper)...)
 	sides := "one-sided"
 	if opt.Duplex {
-		sides = "two-sided-long-edge"
+		if opt.DuplexMode == "short" {
+			sides = "two-sided-short-edge"
+		} else {
+			sides = "two-sided-long-edge"
+		}
 	}
 	jobAttrs = append(jobAttrs, attr(tagKeyword, "sides", sides)...)
+	quality := 4
+	switch opt.Quality {
+	case "draft":
+		quality = 3
+	case "high":
+		quality = 5
+	}
+	jobAttrs = append(jobAttrs, intAttr(tagEnum, "print-quality", int32(quality))...)
+	orientation := 3 // portrait
+	if opt.Orientation == "landscape" {
+		orientation = 4
+	}
+	jobAttrs = append(jobAttrs, intAttr(tagEnum, "orientation-requested", int32(orientation))...)
 	colorMode := "monochrome"
 	if opt.Color {
 		colorMode = "color"

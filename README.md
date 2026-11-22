@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 打印 PDF、JPEG、PNG；
+- 打印 PDF、JPEG、PNG、TXT；
 - 支持 Excel（xlsx/xls）与 Word（docx）文档：浏览器端解析并渲染为图片后打印（PPT 请先转 PDF）；
 - 打印机自动发现（IPP/AirPrint 631 与 RAW 9100）与手动添加；
 - 文件管理：目录树 + 面包屑 + 缩略图网格 + 搜索/类型筛选 + 路径直达 + 收藏/最近；

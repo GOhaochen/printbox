@@ -3,6 +3,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"errors"
 	"time"
 
@@ -33,6 +34,9 @@ type Job struct {
 	Color      bool   `json:"color"`
 	Scale      string `json:"scale"` // fit / actual
 	Pages      string `json:"pages"` // 页码范围，如 1-3,5；空=全部
+	DuplexMode string `json:"duplex_mode"` // long / short
+	Quality    string `json:"quality"`     // draft / normal / high
+	Orientation string `json:"orientation"` // portrait / landscape
 	Status     string `json:"status"` // queued / printing / done / failed / canceled
 	Error      string `json:"error"`
 	CreatedAt  string `json:"created_at"`
@@ -66,10 +70,21 @@ CREATE TABLE IF NOT EXISTS jobs (
   color INTEGER DEFAULT 0,
   scale TEXT DEFAULT 'fit',
   pages TEXT DEFAULT '',
+  duplex_mode TEXT DEFAULT 'long',
+  quality TEXT DEFAULT 'normal',
+  orientation TEXT DEFAULT 'portrait',
   status TEXT DEFAULT 'queued',
   error TEXT DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scanners (
+  id TEXT PRIMARY KEY,
+  ip TEXT NOT NULL,
+  name TEXT DEFAULT '',
+  model TEXT DEFAULT '',
+  is_default INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS favorites (
   path TEXT PRIMARY KEY,
@@ -103,6 +118,9 @@ func Open(path string) (*Store, error) {
 	}
 	// 旧库补列：列已存在时会报错，忽略即可
 	_, _ = db.Exec(`ALTER TABLE jobs ADD COLUMN pages TEXT DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE jobs ADD COLUMN duplex_mode TEXT DEFAULT 'long'`)
+	_, _ = db.Exec(`ALTER TABLE jobs ADD COLUMN quality TEXT DEFAULT 'normal'`)
+	_, _ = db.Exec(`ALTER TABLE jobs ADD COLUMN orientation TEXT DEFAULT 'portrait'`)
 	return &Store{db: db}, nil
 }
 
@@ -214,6 +232,59 @@ func (s *Store) DeletePrinter(id string) error {
 	return err
 }
 
+// ---------- scanners ----------
+
+func (s *Store) SaveScanner(ip, name, model string) error {
+	if ip == "" {
+		return fmt.Errorf("缺少扫描仪地址")
+	}
+	_, err := s.db.Exec(`INSERT INTO scanners(id,ip,name,model,is_default,created_at) VALUES(?,?,?,?,0,?)
+		ON CONFLICT(id) DO UPDATE SET ip=excluded.ip,name=excluded.name,model=excluded.model`,
+		ip, ip, name, model, now())
+	if err != nil {
+		return err
+	}
+	// 首次添加设为默认
+	var cnt int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM scanners WHERE is_default=1`).Scan(&cnt)
+	if cnt == 0 {
+		_, _ = s.db.Exec(`UPDATE scanners SET is_default=1 WHERE id=?`, ip)
+	}
+	return nil
+}
+
+func (s *Store) ListScanners() ([]Printer, error) {
+	rows, err := s.db.Query(`SELECT id,ip,name,model,is_default,created_at FROM scanners ORDER BY is_default DESC, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Printer
+	for rows.Next() {
+		var p Printer
+		var def int
+		if err := rows.Scan(&p.ID, &p.IP, &p.Name, &p.Model, &def, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		p.IsDefault = def == 1
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SetDefaultScanner(id string) error {
+	if _, err := s.db.Exec(`UPDATE scanners SET is_default=0`); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE scanners SET is_default=1 WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DeleteScanner(id string) error {
+	_, err := s.db.Exec(`DELETE FROM scanners WHERE id=?`, id)
+	return err
+}
+
 // ---------- jobs ----------
 
 func (s *Store) CreateJob(j *Job) error {
@@ -234,9 +305,18 @@ func (s *Store) CreateJob(j *Job) error {
 	if j.Scale == "" {
 		j.Scale = "fit"
 	}
-	_, err := s.db.Exec(`INSERT INTO jobs(id,file_path,file_name,printer_ip,printer_name,copies,paper,duplex,color,scale,pages,status,error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		j.ID, j.FilePath, j.FileName, j.PrinterIP, j.PrinterName, j.Copies, j.Paper, boolInt(j.Duplex), boolInt(j.Color), j.Scale, j.Pages, j.Status, j.Error, j.CreatedAt, j.UpdatedAt)
+	if j.DuplexMode == "" {
+		j.DuplexMode = "long"
+	}
+	if j.Quality == "" {
+		j.Quality = "normal"
+	}
+	if j.Orientation == "" {
+		j.Orientation = "portrait"
+	}
+	_, err := s.db.Exec(`INSERT INTO jobs(id,file_path,file_name,printer_ip,printer_name,copies,paper,duplex,color,scale,pages,duplex_mode,quality,orientation,status,error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		j.ID, j.FilePath, j.FileName, j.PrinterIP, j.PrinterName, j.Copies, j.Paper, boolInt(j.Duplex), boolInt(j.Color), j.Scale, j.Pages, j.DuplexMode, j.Quality, j.Orientation, j.Status, j.Error, j.CreatedAt, j.UpdatedAt)
 	return err
 }
 
@@ -247,9 +327,9 @@ func (s *Store) UpdateJobStatus(id, status, errMsg string) error {
 
 func (s *Store) GetJob(id string) (Job, error) {
 	var j Job
-	err := s.db.QueryRow(`SELECT id,file_path,file_name,printer_ip,printer_name,copies,paper,duplex,color,scale,COALESCE(pages,''),status,error,created_at,updated_at
+	err := s.db.QueryRow(`SELECT id,file_path,file_name,printer_ip,printer_name,copies,paper,duplex,color,scale,COALESCE(pages,''),COALESCE(duplex_mode,'long'),COALESCE(quality,'normal'),COALESCE(orientation,'portrait'),status,error,created_at,updated_at
 		FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.FilePath, &j.FileName, &j.PrinterIP, &j.PrinterName,
-		&j.Copies, &j.Paper, &j.Duplex, &j.Color, &j.Scale, &j.Pages, &j.Status, &j.Error, &j.CreatedAt, &j.UpdatedAt)
+		&j.Copies, &j.Paper, &j.Duplex, &j.Color, &j.Scale, &j.Pages, &j.DuplexMode, &j.Quality, &j.Orientation, &j.Status, &j.Error, &j.CreatedAt, &j.UpdatedAt)
 	return j, err
 }
 
@@ -257,7 +337,7 @@ func (s *Store) ListJobs(limit int) ([]Job, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`SELECT id,file_path,file_name,printer_ip,printer_name,copies,paper,duplex,color,scale,COALESCE(pages,''),status,error,created_at,updated_at
+	rows, err := s.db.Query(`SELECT id,file_path,file_name,printer_ip,printer_name,copies,paper,duplex,color,scale,COALESCE(pages,''),COALESCE(duplex_mode,'long'),COALESCE(quality,'normal'),COALESCE(orientation,'portrait'),status,error,created_at,updated_at
 		FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -268,7 +348,7 @@ func (s *Store) ListJobs(limit int) ([]Job, error) {
 		var j Job
 		var dup, col int
 		if err := rows.Scan(&j.ID, &j.FilePath, &j.FileName, &j.PrinterIP, &j.PrinterName,
-			&j.Copies, &j.Paper, &dup, &col, &j.Scale, &j.Pages, &j.Status, &j.Error, &j.CreatedAt, &j.UpdatedAt); err != nil {
+			&j.Copies, &j.Paper, &dup, &col, &j.Scale, &j.Pages, &j.DuplexMode, &j.Quality, &j.Orientation, &j.Status, &j.Error, &j.CreatedAt, &j.UpdatedAt); err != nil {
 			return nil, err
 		}
 		j.Duplex = dup == 1
@@ -282,9 +362,9 @@ func (s *Store) ListJobs(limit int) ([]Job, error) {
 func (s *Store) NextQueuedJob() (*Job, error) {
 	var j Job
 	var dup, col int
-	err := s.db.QueryRow(`SELECT id,file_path,file_name,printer_ip,printer_name,copies,paper,duplex,color,scale,COALESCE(pages,''),status,error,created_at,updated_at
+	err := s.db.QueryRow(`SELECT id,file_path,file_name,printer_ip,printer_name,copies,paper,duplex,color,scale,COALESCE(pages,''),COALESCE(duplex_mode,'long'),COALESCE(quality,'normal'),COALESCE(orientation,'portrait'),status,error,created_at,updated_at
 		FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 1`).Scan(&j.ID, &j.FilePath, &j.FileName, &j.PrinterIP, &j.PrinterName,
-		&j.Copies, &j.Paper, &dup, &col, &j.Scale, &j.Pages, &j.Status, &j.Error, &j.CreatedAt, &j.UpdatedAt)
+		&j.Copies, &j.Paper, &dup, &col, &j.Scale, &j.Pages, &j.DuplexMode, &j.Quality, &j.Orientation, &j.Status, &j.Error, &j.CreatedAt, &j.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

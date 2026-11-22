@@ -17,6 +17,8 @@ const state = {
   printerStatus: null,
   jobs: [],
   queueTimer: null,
+  scanners: [],
+  currentScanner: '',
 };
 
 // ---------- 工具 ----------
@@ -97,6 +99,12 @@ function route() {
   }
 }
 window.addEventListener('hashchange', route);
+window.addEventListener('popstate', e => {
+  const st = e.state;
+  if (st && st.dir) { loadDir(st.dir, { noPush: true }); return; }
+  if ((location.hash || '#/files') !== '#/files') { location.hash = '#/files'; return; }
+  loadDir(state.cwd, { noPush: true });
+});
 document.addEventListener('click', e => {
   const back = e.target.closest('#btn-back');
   if (back) { location.hash = '#/files'; }
@@ -166,8 +174,20 @@ async function renderFiles(view) {
     return;
   }
   if (!state.cwd || !state.roots.some(r => state.cwd.startsWith(r.path))) state.cwd = state.roots[0].path;
-  await loadDir(state.cwd);
+  await loadDir(state.cwd, { noPush: true });
   renderTree();
+  const si = $('#search');
+  if (si) {
+    si.value = state.searchQ || '';
+    si.onkeydown = e => { if (e.key === 'Enter') doSearch(si.value.trim()); };
+    let timer = null;
+    si.oninput = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!si.value.trim() && state.searchResults) { state.searchQ = ''; state.searchResults = null; renderFilesView(); }
+      }, 260);
+    };
+  }
 }
 
 async function loadDir(path) {
@@ -176,6 +196,12 @@ async function loadDir(path) {
     state.cwd = data.path;
     state.entries = data.entries || [];
     state.parent = data.parent;
+    state.searchResults = null;
+    if (opts.noPush) {
+      try { history.replaceState({ dir: state.cwd }, ''); } catch (e) {}
+    } else {
+      try { history.pushState({ dir: state.cwd }, ''); } catch (e) {}
+    }
     renderFilesView();
   } catch (e) { toast(e.message); }
 }
@@ -203,6 +229,13 @@ function renderTree() {
 function renderBreadcrumb() {
   const box = $('#crumbs');
   if (!box) return;
+  if (state.searchResults) {
+    box.innerHTML = `<span class="hint">搜索“${esc(state.searchQ || '')}”共 ${state.searchResults.length} 个结果</span>
+      <button class="btn small" id="search-clear">清除</button>`;
+    const c = $('#search-clear');
+    if (c) c.onclick = () => { state.searchQ = ''; state.searchResults = null; const si = $('#search'); if (si) si.value = ''; renderFilesView(); };
+    return;
+  }
   const root = state.roots.find(r => state.cwd.startsWith(r.path)) || state.roots[0];
   const parts = [];
   if (root) {
@@ -266,10 +299,10 @@ function renderFilesView() {
   renderTree();
   const grid = $('#grid');
   if (!grid) return;
-  let entries = state.entries;
-  if (state.filter !== 'all') entries = entries.filter(e => e.is_dir || e.kind === state.filter);
+  let entries = state.searchResults ? state.searchResults : state.entries;
+  if (!state.searchResults && state.filter !== 'all') entries = entries.filter(e => e.is_dir || e.kind === state.filter);
   if (!entries.length) {
-    grid.innerHTML = `<div class="empty" style="grid-column:1/-1">此目录没有可显示的文件</div>`;
+    grid.innerHTML = `<div class="empty" style="grid-column:1/-1">${state.searchResults ? '没有匹配的文件' : '此目录没有可显示的文件'}</div>`;
   } else {
     grid.innerHTML = entries.map(e => {
       if (e.is_dir) {
@@ -291,6 +324,8 @@ function renderFilesView() {
       </div>`;
     }).join('');
   }
+  const clearBtn = $('#search-clear');
+  if (clearBtn) clearBtn.onclick = () => { state.searchQ = ''; state.searchResults = null; const si = $('#search'); if (si) si.value = ''; renderFilesView(); };
   $$('#grid .file-card').forEach(card => {
     card.onclick = e => {
       if (card.dataset.dir) { loadDir(card.dataset.dir); return; }
@@ -377,16 +412,17 @@ function openPrintDialog(files) {
   const isPDF = /\.pdf$/i.test(first.path);
   const firstExt = fileExt(first.name || first.path);
   const isOffice = ['xlsx', 'xls', 'docx', 'doc'].includes(firstExt);
+  const isText = firstExt === 'txt';
   const preview = isImage
     ? `<img src="/api/files/content?path=${encodeURIComponent(first.path)}" alt="">`
-    : isOffice
-      ? `<div class="hint" style="padding:20px;text-align:center">Office 文件将在打印时解析为图片<br>（表格/文字排版会尽量保留）</div>`
+    : isOffice || isText
+      ? `<div class="hint" style="padding:20px;text-align:center">正在生成预览…</div>`
       : `<iframe src="/api/files/content?path=${encodeURIComponent(first.path)}"></iframe>`;
   const m = $('#modal');
   m.innerHTML = `<div class="modal-box">
     <h3 style="margin:0 0 12px;font-size:16px">打印${files.length > 1 ? `（${files.length} 个文件）` : ''}</h3>
     <div class="print-dialog">
-      <div class="preview">${preview}</div>
+      <div class="preview" id="pr-preview">${preview}</div>
       <div class="form">
         <div class="hint" style="margin-bottom:2px">${files.map(f => esc(f.name)).join('<br>')}</div>
         <label class="field"><span>打印机</span>
@@ -412,6 +448,21 @@ function openPrintDialog(files) {
         <label class="field" id="pr-pages-wrap" style="display:${isPDF ? 'flex' : 'none'}"><span>页码范围</span>
           <input id="pr-pages" placeholder="全部；例如 1-3,5">
         </label>
+        <div class="row2">
+          <label class="field"><span>双面方式</span><select id="pr-duplex-mode">
+            <option value="long" selected>长边翻转（书籍）</option>
+            <option value="short">短边翻转（便签）</option>
+          </select></label>
+          <label class="field"><span>打印质量</span><select id="pr-quality">
+            <option value="draft">草稿（省墨）</option>
+            <option value="normal" selected>标准</option>
+            <option value="high">高（清晰）</option>
+          </select></label>
+        </div>
+        <label class="field"><span>页面方向</span><select id="pr-orientation">
+          <option value="portrait" selected>纵向</option>
+          <option value="landscape">横向</option>
+        </select></label>
         <label class="field"><span>缩放</span><select id="pr-scale">
           <option value="fit" ${s.default_scale !== 'actual' ? 'selected' : ''}>适应页面</option>
           <option value="actual" ${s.default_scale === 'actual' ? 'selected' : ''}>实际大小</option>
@@ -427,6 +478,24 @@ function openPrintDialog(files) {
       </div>
     </div></div>`;
   m.classList.add('open');
+  if (isOffice || isText) {
+    (async () => {
+      const pre = $('#pr-preview');
+      try {
+        const cached = state.previewCache && state.previewCache.path === first.path ? state.previewCache.data : null;
+        const data = cached || await renderDocToBlobs(first.path, (i, n) => {
+          if (pre) pre.innerHTML = `<div class="hint" style="padding:20px;text-align:center"><span class="spinner"></span> 正在生成预览 ${i}/${n} 页…</div>`;
+        });
+        state.previewCache = { path: first.path, data };
+        const url = URL.createObjectURL(data.blobs[0].blob);
+        if (pre) {
+          pre.innerHTML = `<div style="width:100%;text-align:center"><img src="${url}" style="max-width:100%;max-height:420px;object-fit:contain"><div class="hint" style="padding:6px">共 ${data.blobs.length} 页 · 预览为第 1 页</div></div>`;
+        }
+      } catch (e) {
+        if (pre) pre.innerHTML = `<div class="hint" style="padding:20px;text-align:center">预览失败：${esc(e.message)}</div>`;
+      }
+    })();
+  }
   $('#pr-cancel').onclick = () => m.classList.remove('open');
   $('#pr-test').onclick = async () => {
     try {
@@ -444,6 +513,9 @@ function openPrintDialog(files) {
       color: $('#pr-color').value === 'true',
       scale: $('#pr-scale').value,
       pages: ($('#pr-pages') && $('#pr-pages').value.trim()) || '',
+      duplex_mode: ($('#pr-duplex-mode') && $('#pr-duplex-mode').value) || 'long',
+      quality: ($('#pr-quality') && $('#pr-quality').value) || 'normal',
+      orientation: ($('#pr-orientation') && $('#pr-orientation').value) || 'portrait',
       save_as_default: $('#pr-save').checked,
     };
     const btn = $('#pr-ok');
@@ -453,11 +525,19 @@ function openPrintDialog(files) {
       let created = 0;
       for (const f of files) {
         const ext = fileExt(f.name || f.path);
-        if (ext === 'xlsx' || ext === 'xls' || ext === 'docx' || ext === 'doc') {
-          btn.textContent = '正在解析 Office 文档…';
-          const { blobs } = await renderOfficeToBlobs(f.path, (i, n) => {
-            btn.textContent = `正在生成第 ${i}/${n} 页…`;
-          });
+        if (['xlsx', 'xls', 'docx', 'doc', 'txt'].includes(ext)) {
+          const cached = state.previewCache && state.previewCache.path === f.path ? state.previewCache.data : null;
+          let blobs;
+          if (cached) {
+            blobs = cached.blobs;
+          } else {
+            btn.textContent = '正在解析文档…';
+            const data = await renderDocToBlobs(f.path, (i, n) => {
+              btn.textContent = `正在生成第 ${i}/${n} 页…`;
+            });
+            state.previewCache = { path: f.path, data };
+            blobs = data.blobs;
+          }
           for (const { page, blob } of blobs) {
             btn.textContent = `正在上传第 ${page} 页…`;
             const fd = new FormData();
@@ -523,37 +603,8 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// 把 Office 文档解析为 HTML，再渲染为分页 JPEG
-async function renderOfficeToBlobs(path, onProgress) {
-  const ext = fileExt(path);
-  const res = await fetch('/api/files/content?path=' + encodeURIComponent(path));
-  if (!res.ok) throw new Error('读取文件失败');
-  const buf = await res.arrayBuffer();
-  let html = '';
-  if (ext === 'xlsx' || ext === 'xls') {
-    const XLSX = await loadScriptOnce('/vendor/office/xlsx.full.min.js', 'XLSX');
-    const wb = XLSX.read(buf, { type: 'array' });
-    const sheets = (wb.SheetNames || []).slice(0, 6);
-    html = sheets.map(name => {
-      const ws = wb.Sheets[name];
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
-      const body = rows.map(row => '<tr>' + row.map(cell => `<td>${escapeHtml(cell == null ? '' : String(cell))}</td>`).join('') + '</tr>').join('');
-      return `<h3>${escapeHtml(name)}</h3><table>${body}</table>`;
-    }).join('<hr style="page-break-after:always;border:none;height:24px">');
-  } else if (ext === 'docx' || ext === 'doc') {
-    // .doc 若实际为 docx（zip 结构）也可解析；旧版二进制 .doc 给出明确提示
-    const head = new Uint8Array(buf.slice(0, 4));
-    const isZip = head[0] === 0x50 && head[1] === 0x4b;
-    if (ext === 'doc' && !isZip) {
-      throw new Error('该 .doc 为旧版 Word 格式，浏览器无法解析；请另存为 .docx 或 PDF 后打印');
-    }
-    const mammoth = await loadScriptOnce('/vendor/office/mammoth.browser.min.js', 'mammoth');
-    const result = await mammoth.convertToHtml({ arrayBuffer: buf });
-    html = result.value || '<p>（空文档）</p>';
-  } else {
-    throw new Error('暂不支持该类型，请先转换为 PDF');
-  }
-
+// 把 HTML 渲染为分页 JPEG
+async function renderHtmlToBlobs(html, onProgress) {
   const host = document.createElement('div');
   host.style.cssText = 'position:fixed;left:0;top:0;z-index:-1;width:1240px;box-sizing:border-box;background:#fff;color:#111;padding:56px;font:16px/1.65 "Microsoft YaHei","PingFang SC",Arial,sans-serif;';
   host.innerHTML = `<style>
@@ -590,6 +641,53 @@ async function renderOfficeToBlobs(path, onProgress) {
   } finally {
     host.remove();
   }
+}
+
+// 解析 Office / 文本并渲染为分页 JPEG
+async function renderDocToBlobs(path, onProgress) {
+  const ext = fileExt(path);
+  if (ext === 'txt') return renderTextToBlobs(path, onProgress);
+  const res = await fetch('/api/files/content?path=' + encodeURIComponent(path));
+  if (!res.ok) throw new Error('读取文件失败');
+  const buf = await res.arrayBuffer();
+  let html = '';
+  if (ext === 'xlsx' || ext === 'xls') {
+    const XLSX = await loadScriptOnce('/vendor/office/xlsx.full.min.js', 'XLSX');
+    const wb = XLSX.read(buf, { type: 'array' });
+    const sheets = (wb.SheetNames || []).slice(0, 6);
+    html = sheets.map(name => {
+      const ws = wb.Sheets[name];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+      const body = rows.map(row => '<tr>' + row.map(cell => `<td>${escapeHtml(cell == null ? '' : String(cell))}</td>`).join('') + '</tr>').join('');
+      return `<h3>${escapeHtml(name)}</h3><table>${body}</table>`;
+    }).join('<hr style="page-break-after:always;border:none;height:24px">');
+  } else if (ext === 'docx' || ext === 'doc') {
+    const head = new Uint8Array(buf.slice(0, 4));
+    const isZip = head[0] === 0x50 && head[1] === 0x4b;
+    if (ext === 'doc' && !isZip) {
+      throw new Error('该 .doc 为旧版 Word 格式，浏览器无法解析；请另存为 .docx 或 PDF 后打印');
+    }
+    const mammoth = await loadScriptOnce('/vendor/office/mammoth.browser.min.js', 'mammoth');
+    const result = await mammoth.convertToHtml({ arrayBuffer: buf });
+    html = result.value || '<p>（空文档）</p>';
+  } else {
+    throw new Error('暂不支持该类型，请先转换为 PDF');
+  }
+  return renderHtmlToBlobs(html, onProgress);
+}
+
+async function renderTextToBlobs(path, onProgress) {
+  const res = await fetch('/api/files/content?path=' + encodeURIComponent(path));
+  if (!res.ok) throw new Error('读取文件失败');
+  const buf = await res.arrayBuffer();
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+  } catch (e) {
+    try { text = new TextDecoder('gbk').decode(buf); } catch (e2) { text = new TextDecoder().decode(buf); }
+  }
+  const html = `<pre style="white-space:pre-wrap;word-break:break-all;font:13.5px/1.75 'Consolas','Menlo',monospace;margin:0">${escapeHtml(text)}</pre>`;
+  return renderHtmlToBlobs(html, onProgress);
 }
 
 let _pdfjs = null;
@@ -688,19 +786,28 @@ function openFileMenu(path) {
 }
 
 // ---------- 扫描 ----------
+async function loadScanners() {
+  try { state.scanners = await api('/api/scanners'); } catch (e) { state.scanners = []; }
+  if (!state.currentScanner) {
+    const def = (state.scanners || []).find(x => x.is_default) || (state.scanners || [])[0];
+    state.currentScanner = def ? def.ip : '';
+  }
+}
+
 async function renderScan(view) {
-  const st = state.settings || {};
+  await loadScanners();
   view.innerHTML = `<div class="panel">
     <div class="page-head"><button class="btn ghost small" id="btn-back">← 返回</button><h2 style="margin:0">扫描</h2></div>
     <div class="settings-grid">
       <div class="section">
         <h3>扫描仪</h3>
-        <div class="row2">
-          <input id="sc-ip" value="${esc(st.scanner_host || '')}" placeholder="扫描仪 IP，如 192.168.3.161">
+        <div class="list" id="sc-list">加载中…</div>
+        <div class="actions" style="margin-top:12px">
           <button class="btn" id="sc-discover">发现扫描仪</button>
+          <button class="btn" id="sc-add">手动添加</button>
         </div>
-        <div class="hint" id="sc-status" style="margin-top:8px">${st.scanner_host ? '检测中…' : '请先填写或发现扫描仪'}</div>
-        <div class="hint" id="sc-found" style="margin-top:6px"></div>
+        <div class="hint" id="sc-found" style="margin-top:8px"></div>
+        <div class="hint" id="sc-status" style="margin-top:6px"></div>
       </div>
       <div class="section">
         <h3>扫描参数</h3>
@@ -726,56 +833,69 @@ async function renderScan(view) {
       </div>
     </div></div>`;
   $('#btn-back').onclick = () => { location.hash = '#/files'; };
-  const ipInput = $('#sc-ip');
+  renderScannerList();
+  const checkStatus = async () => {
+    if (!state.currentScanner) return;
+    const el = $('#sc-status');
+    el.textContent = '状态检测中…';
+    try {
+      const r = await api('/api/scanners/status?ip=' + encodeURIComponent(state.currentScanner));
+      el.textContent = r.state === 'offline' ? '离线：' + (r.error || '') : '状态：' + r.state;
+    } catch (e) { el.textContent = '检测失败：' + e.message; }
+  };
+  checkStatus();
   $('#sc-discover').onclick = async () => {
     const hint = $('#sc-found');
     let sec = 0;
-    hint.innerHTML = '<span class="spinner"></span><span class="search-text">正在搜索扫描仪… 已用 0 秒</span>';
+    hint.innerHTML = '<span class="spinner"></span><span class="search-text">正在搜索扫描仪（优先检查打印机）… 已用 0 秒</span>';
     const timer = setInterval(() => {
       sec++;
       const t = hint.querySelector('.search-text');
-      if (t) t.textContent = `正在搜索扫描仪… 已用 ${sec} 秒`;
+      if (t) t.textContent = `正在搜索扫描仪（优先检查打印机）… 已用 ${sec} 秒`;
     }, 1000);
     try {
       const r = await api('/api/scanners/discover');
       clearInterval(timer);
       const list = r.scanners || [];
       if (!list.length) { hint.textContent = `搜索完成（${sec} 秒）：未发现扫描仪`; return; }
-      hint.innerHTML = `搜索完成（${sec} 秒），发现 ${list.length} 台：` + list.map(x =>
-        `<button class="btn small" data-sip="${esc(x.ip)}">${esc(x.ip)} · ${esc(x.model)}${x.from_printer ? ' ⭐' : ''}</button>`).join(' ');
-      $$('#sc-found [data-sip]').forEach(b => b.onclick = () => {
-        ipInput.value = b.dataset.sip;
-        checkScannerStatus();
+      hint.innerHTML = `搜索完成（${sec} 秒），发现 ${list.length} 台，点击添加：` + list.map(x =>
+        `<button class="btn small" data-sadd='${esc(JSON.stringify(x))}'>${esc(x.ip)}${x.from_printer ? ' ⭐' : ''}</button>`).join(' ');
+      $$('#sc-found [data-sadd]').forEach(b => b.onclick = async () => {
+        const x = JSON.parse(b.dataset.sadd);
+        try {
+          await api('/api/scanners', { method: 'POST', body: { ip: x.ip, name: x.model || x.ip, model: x.model || '' } });
+          await loadScanners();
+          state.currentScanner = x.ip;
+          renderScannerList();
+          checkStatus();
+          toast('已添加扫描仪');
+        } catch (e) { toast(e.message); }
       });
     } catch (e) { clearInterval(timer); hint.textContent = '搜索失败：' + e.message; }
   };
-  const checkScannerStatus = async () => {
-    const ip = ipInput.value.trim();
+  $('#sc-add').onclick = async () => {
+    const ip = prompt('输入扫描仪 IP（如 192.168.3.161）');
     if (!ip) return;
-    const el = $('#sc-status');
-    el.textContent = '检测中…';
     try {
-      const r = await api('/api/scanners/status?ip=' + encodeURIComponent(ip));
-      el.textContent = r.state === 'offline' ? '离线：' + (r.error || '') : '状态：' + r.state;
-    } catch (e) { el.textContent = '检测失败：' + e.message; }
+      await api('/api/scanners', { method: 'POST', body: { ip: ip.trim(), name: ip.trim() } });
+      await loadScanners();
+      state.currentScanner = ip.trim();
+      renderScannerList();
+      checkStatus();
+    } catch (e) { toast(e.message); }
   };
-  ipInput.onchange = checkScannerStatus;
-  if (st.scanner_host) checkScannerStatus();
   $('#sc-start').onclick = async () => {
-    const ip = ipInput.value.trim();
-    if (!ip) { toast('请填写扫描仪 IP'); return; }
+    if (!state.currentScanner) { toast('请先添加并选择扫描仪'); return; }
     const btn = $('#sc-start');
     btn.disabled = true; btn.textContent = '扫描中…';
     $('#sc-progress').innerHTML = '<span class="spinner"></span> 正在扫描，请稍候…';
     try {
       const r = await api('/api/scanners/scan', { method: 'POST', body: {
-        ip,
+        ip: state.currentScanner,
         dpi: Number($('#sc-dpi').value) || 300,
         color_mode: $('#sc-mode').value,
         format: 'image/jpeg',
       } });
-      try { await api('/api/settings', { method: 'PUT', body: { scanner_host: ip } }); } catch (e2) {}
-      if (state.settings) state.settings.scanner_host = ip;
       $('#sc-progress').textContent = '';
       $('#sc-result').innerHTML = `<div class="hint">已保存：${esc(r.name)} · ${fmtSize(r.size)} · ${r.dpi} dpi</div>
         <img src="/api/files/content?path=${encodeURIComponent(r.path)}" style="max-width:100%;border-radius:10px;margin-top:10px;display:block">
@@ -788,6 +908,45 @@ async function renderScan(view) {
     } catch (e) { toast(e.message, 5000); $('#sc-progress').textContent = ''; }
     finally { btn.disabled = false; btn.textContent = '开始扫描'; }
   };
+}
+
+function renderScannerList() {
+  const box = $('#sc-list');
+  if (!box) return;
+  const list = state.scanners || [];
+  if (!list.length) {
+    box.innerHTML = '<div class="hint">尚未添加扫描仪，点「发现扫描仪」或「手动添加」。</div>';
+    return;
+  }
+  box.innerHTML = list.map(x => `<div class="rowitem">
+    <span class="grow" data-pick="${esc(x.ip)}" style="cursor:pointer">
+      <div class="fname">${esc(x.name || x.ip)} ${state.currentScanner === x.ip ? '<span class="badge done">已选</span>' : ''} ${x.is_default ? '<span class="badge">默认</span>' : ''}</div>
+      <div class="fsub">${esc(x.ip)}${x.model ? ' · ' + esc(x.model) : ''}</div>
+    </span>
+    <button class="btn small" data-sdef="${esc(x.id)}">设为默认</button>
+    <button class="btn small danger" data-sdel="${esc(x.id)}">删除</button>
+  </div>`).join('');
+  $$('#sc-list [data-pick]').forEach(el => el.onclick = () => {
+    state.currentScanner = el.dataset.pick;
+    renderScannerList();
+    const st = $('#sc-status');
+    if (st) st.textContent = '状态检测中…';
+    api('/api/scanners/status?ip=' + encodeURIComponent(state.currentScanner)).then(r => {
+      if (st) st.textContent = r.state === 'offline' ? '离线：' + (r.error || '') : '状态：' + r.state;
+    }).catch(() => {});
+  });
+  $$('#sc-list [data-sdef]').forEach(b => b.onclick = async () => {
+    try { await api('/api/scanners/default', { method: 'POST', body: { id: b.dataset.sdef } }); await loadScanners(); renderScannerList(); toast('已设为默认'); } catch (e) { toast(e.message); }
+  });
+  $$('#sc-list [data-sdel]').forEach(b => b.onclick = async () => {
+    if (!await confirmDialog('确认删除该扫描仪？', '删除')) return;
+    try {
+      await api('/api/scanners/' + encodeURIComponent(b.dataset.sdel), { method: 'DELETE' });
+      await loadScanners();
+      if (!state.scanners.some(x => x.ip === state.currentScanner)) state.currentScanner = (state.scanners[0] || {}).ip || '';
+      renderScannerList();
+    } catch (e) { toast(e.message); }
+  });
 }
 
 // ---------- 队列与历史 ----------

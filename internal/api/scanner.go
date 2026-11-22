@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"printbox/internal/escl"
+	"printbox/internal/store"
 )
 
 // scannerFound 是发现到的扫描仪。
@@ -82,6 +83,65 @@ func probeScanner(ip string) (string, bool) {
 		return "", false
 	}
 	return "eSCL 扫描仪", true
+}
+
+// handleListScanners 返回已保存的扫描仪。
+func (s *Server) handleListScanners(w http.ResponseWriter, r *http.Request) {
+	list, err := s.st.ListScanners()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if list == nil {
+		list = []store.Printer{}
+	}
+	writeJSON(w, 200, list)
+}
+
+// handleSaveScanner 保存扫描仪。
+func (s *Server) handleSaveScanner(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IP    string `json:"ip"`
+		Name  string `json:"name"`
+		Model string `json:"model"`
+	}
+	if err := readJSON(r, &body); err != nil || body.IP == "" {
+		writeErr(w, 400, "缺少扫描仪地址")
+		return
+	}
+	if body.Name == "" {
+		body.Name = body.IP
+	}
+	if err := s.st.SaveScanner(body.IP, body.Name, body.Model); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// handleDeleteScanner 删除扫描仪。
+func (s *Server) handleDeleteScanner(w http.ResponseWriter, r *http.Request) {
+	if err := s.st.DeleteScanner(r.PathValue("id")); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// handleDefaultScanner 设置默认扫描仪。
+func (s *Server) handleDefaultScanner(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := readJSON(r, &body); err != nil || body.ID == "" {
+		writeErr(w, 400, "缺少 id")
+		return
+	}
+	if err := s.st.SetDefaultScanner(body.ID); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 // handleScannerStatus 查询扫描仪状态。

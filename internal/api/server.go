@@ -82,6 +82,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/printers/default", s.handleDefaultPrinter)
 	m.HandleFunc("DELETE /api/printers/{id}", s.handleDeletePrinter)
 	m.HandleFunc("GET /api/printers/discover", s.handleDiscover)
+	m.HandleFunc("GET /api/scanners", s.handleListScanners)
+	m.HandleFunc("POST /api/scanners", s.handleSaveScanner)
+	m.HandleFunc("DELETE /api/scanners/{id}", s.handleDeleteScanner)
+	m.HandleFunc("POST /api/scanners/default", s.handleDefaultScanner)
 	m.HandleFunc("GET /api/scanners/discover", s.handleDiscoverScanners)
 	m.HandleFunc("GET /api/scanners/status", s.handleScannerStatus)
 	m.HandleFunc("POST /api/scanners/scan", s.handleScan)
@@ -191,7 +195,10 @@ func (s *Server) processJob(job *store.Job) {
 		}
 	}
 
-	opt := ipp.Options{Copies: job.Copies, Paper: job.Paper, Duplex: job.Duplex, Color: job.Color, Scale: job.Scale}
+	opt := ipp.Options{
+		Copies: job.Copies, Paper: job.Paper, Duplex: job.Duplex, Color: job.Color, Scale: job.Scale,
+		DuplexMode: job.DuplexMode, Quality: job.Quality, Orientation: job.Orientation,
+	}
 	if err := s.doPrint(printerIP, fileName, data, format, sourcePath, job.Pages, opt); err != nil {
 		_ = s.st.UpdateJobStatus(job.ID, "failed", err.Error())
 		log.Printf("打印失败 %s：%v", job.ID, err)
@@ -542,6 +549,9 @@ type printReq struct {
 	Color       bool   `json:"color"`
 	Scale       string `json:"scale"`
 	Pages       string `json:"pages"`
+	DuplexMode  string `json:"duplex_mode"`
+	Quality     string `json:"quality"`
+	Orientation string `json:"orientation"`
 	SaveAsDefault bool `json:"save_as_default"`
 }
 
@@ -582,8 +592,11 @@ func (s *Server) handlePrint(w http.ResponseWriter, r *http.Request) {
 		Duplex:    req.Duplex,
 		Color:     req.Color,
 		Scale:     req.Scale,
-		Pages:     strings.TrimSpace(req.Pages),
-		Status:    "queued",
+		Pages:       strings.TrimSpace(req.Pages),
+		DuplexMode:  orDefault(req.DuplexMode, "long"),
+		Quality:     orDefault(req.Quality, "normal"),
+		Orientation: orDefault(req.Orientation, "portrait"),
+		Status:      "queued",
 	}
 	if job.Pages != "" {
 		if _, perr := parsePageRange(job.Pages, 0); perr != nil {
@@ -833,6 +846,13 @@ func (s *Server) handleTouchRecent(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.st.TouchRecent(body.Path, body.Name)
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func orDefault(v, def string) string {
+	if strings.TrimSpace(v) == "" {
+		return def
+	}
+	return v
 }
 
 func boolStr(b bool) string {
