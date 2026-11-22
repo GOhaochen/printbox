@@ -486,7 +486,7 @@ function openPrintDialog(files) {
         ${files[0].temp ? '<div class="hint" style="margin-top:4px">该文件为临时文件：打印后自动删除；如需保留请点「保存到…」。</div>' : ''}
         <div class="actions">
           <button class="btn" id="pr-cancel">取消</button>
-          <button class="btn" id="pr-save">保存到…</button>
+          <button class="btn" id="pr-save-copy">保存到…</button>
           <button class="btn" id="pr-test">打印测试页</button>
           <button class="btn primary" id="pr-ok">打印</button>
         </div>
@@ -516,7 +516,7 @@ function openPrintDialog(files) {
   const dupSel = $('#pr-duplex');
   if (dupSel) { dupSel.onchange = dupToggle; dupToggle(); }
   $('#pr-cancel').onclick = () => m.classList.remove('open');
-  const saveBtn = $('#pr-save');
+  const saveBtn = $('#pr-save-copy');
   if (saveBtn) saveBtn.onclick = async () => {
     const dir = await pickDirectory((state.roots[0] || {}).path || '');
     if (!dir) return;
