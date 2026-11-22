@@ -973,36 +973,55 @@ function pickDirectory(startPath) {
   return new Promise(resolve => {
     const m = $('#modal');
     let cur = startPath || (state.roots[0] && state.roots[0].path) || '';
-    const render = async () => {
-      let subdirs = [], parent = '';
-      try {
-        const d = await api('/api/files/list?path=' + encodeURIComponent(cur));
-        cur = d.path;
-        parent = d.parent;
-        subdirs = (d.entries || []).filter(e => e.is_dir);
-      } catch (e) { toast(e.message); }
-      const roots = state.roots.map(r => `<button class="btn small" data-dp-root="${esc(r.path)}">${esc(r.name)}</button>`).join('');
-      m.innerHTML = `<div class="modal-box"><h3 style="margin:0 0 10px;font-size:16px">选择保存位置</h3>
-        <div class="hint" style="margin-bottom:8px;word-break:break-all">${esc(cur)}</div>
-        <div class="actions" style="margin-bottom:8px">${parent ? '<button class="btn small" id="dp-up">↑ 上一级</button>' : ''}${roots}</div>
-        <div class="list" id="dp-list" style="max-height:40vh;overflow:auto"></div>
-        <div class="actions" style="justify-content:flex-end;margin-top:12px">
-          <button class="btn" id="dp-cancel">取消</button>
-          <button class="btn primary" id="dp-ok">保存到此处</button>
-        </div></div>`;
-      const box = $('#dp-list');
-      if (box) {
-        box.innerHTML = subdirs.length ? subdirs.map(d => `<div class="rowitem" data-dp-dir="${esc(d.path)}" style="cursor:pointer"><span class="grow"><div class="fname">${esc(d.name)}</div><div class="fsub">文件夹</div></span></div>`).join('') : '<div class="empty">没有子文件夹</div>';
-        $$('#dp-list [data-dp-dir]').forEach(el => el.onclick = () => { cur = el.dataset.dpDir; render(); });
-      }
-      $$('[data-dp-root]').forEach(el => el.onclick = () => { cur = el.dataset.dpRoot; render(); });
-      const up = $('#dp-up');
-      if (up) up.onclick = () => { cur = parent; render(); };
-      $('#dp-cancel').onclick = () => { m.classList.remove('open'); resolve(null); };
-      $('#dp-ok').onclick = () => { m.classList.remove('open'); resolve(cur); };
-    };
+    let settled = false;
+    const finish = v => { if (!settled) { settled = true; m.classList.remove('open'); resolve(v); } };
+
     m.classList.add('open');
-    render().catch(() => {});
+    m.innerHTML = `<div class="modal-box"><h3 style="margin:0 0 10px;font-size:16px">选择保存位置</h3>
+      <div class="hint" id="dp-loading" style="padding:20px;text-align:center"><span class="spinner"></span> 正在加载目录…</div>
+      <div id="dp-body" style="display:none">
+        <div class="hint" id="dp-cur" style="margin-bottom:8px;word-break:break-all"></div>
+        <div class="actions" id="dp-roots" style="margin-bottom:8px"></div>
+        <div class="list" id="dp-list" style="max-height:40vh;overflow:auto"></div>
+      </div>
+      <div class="actions" style="justify-content:flex-end;margin-top:12px">
+        <button class="btn" id="dp-cancel">取消</button>
+        <button class="btn primary" id="dp-ok">保存到此处</button>
+      </div></div>`;
+
+    const okBtn = $('#dp-ok');
+    const cancelBtn = $('#dp-cancel');
+    cancelBtn.onclick = () => finish(null);
+    okBtn.onclick = () => { if (cur) finish(cur); };
+
+    const load = async path => {
+      const loading = $('#dp-loading');
+      const body = $('#dp-body');
+      if (loading) { loading.style.display = 'block'; loading.innerHTML = '<span class="spinner"></span> 正在加载目录…'; }
+      if (body) body.style.display = 'none';
+      try {
+        const d = await api('/api/files/list?path=' + encodeURIComponent(path));
+        cur = d.path;
+        const parent = d.parent;
+        const subdirs = (d.entries || []).filter(e => e.is_dir);
+        if (loading) loading.style.display = 'none';
+        if (body) body.style.display = 'block';
+        $('#dp-cur').textContent = cur;
+        $('#dp-roots').innerHTML = (parent ? '<button class="btn small" id="dp-up">↑ 上一级</button>' : '')
+          + state.roots.map(r => `<button class="btn small" data-dp-root="${esc(r.path)}">${esc(r.name)}</button>`).join('');
+        const up = $('#dp-up');
+        if (up) up.onclick = () => load(parent);
+        $$('#dp-roots [data-dp-root]').forEach(el => el.onclick = () => load(el.dataset.dpRoot));
+        const list = $('#dp-list');
+        list.innerHTML = subdirs.length ? subdirs.map(dd => `<div class="rowitem" data-dp-dir="${esc(dd.path)}" style="cursor:pointer"><span class="grow"><div class="fname">${esc(dd.name)}</div><div class="fsub">文件夹</div></span></div>`).join('') : '<div class="empty">没有子文件夹</div>';
+        $$('#dp-list [data-dp-dir]').forEach(el => el.onclick = () => load(el.dataset.dpDir));
+      } catch (e) {
+        if (loading) { loading.style.display = 'block'; loading.innerHTML = `加载失败：${esc(e.message)} <button class="btn small" id="dp-retry" style="margin-left:8px">重试</button>`; }
+        const retry = $('#dp-retry');
+        if (retry) retry.onclick = () => load(path);
+      }
+    };
+    load(cur);
   });
 }
 
@@ -1153,7 +1172,15 @@ async function renderScan(view) {
         </div>`;
       $('#sc-print').onclick = () => openPrintDialog([{ path: r.path, name: r.name }]);
       $('#sc-again').onclick = () => $('#sc-start').click();
-      openPrintDialog([{ path: r.path, name: r.name }]);
+      // 扫描完成后自动选择保存位置
+      (async () => {
+        const dir = await pickDirectory((state.roots[0] || {}).path || '');
+        if (!dir) return;
+        try {
+          const saved = await api('/api/files/save-copy', { method: 'POST', body: { path: r.path, target_dir: dir } });
+          toast('扫描件已保存到：' + saved.name, 4200);
+        } catch (e) { toast('保存失败：' + e.message, 4200); }
+      })();
     } catch (e) { toast(e.message, 5000); $('#sc-progress').textContent = ''; }
     finally { btn.disabled = false; btn.textContent = '开始扫描'; }
   };

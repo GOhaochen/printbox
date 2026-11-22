@@ -7,7 +7,7 @@ export GOCACHE=${GOCACHE:-$ROOT/.gocache}
 export GOTMPDIR=${GOTMPDIR:-$ROOT/.gotmp}
 mkdir -p "$GOCACHE" "$GOTMPDIR"
 BUILD=${BUILD_NUM:-1}
-VERSION=0.2.15
+VERSION=0.2.16
 UGCLI=${UGCLI:-$HOME/.local/bin/ugcli}
 
 echo "==> 清理旧产物"
