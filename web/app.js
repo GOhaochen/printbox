@@ -102,8 +102,7 @@ window.addEventListener('hashchange', route);
 window.addEventListener('popstate', e => {
   const st = e.state;
   if (st && st.dir) { loadDir(st.dir, { noPush: true }); return; }
-  if ((location.hash || '#/files') !== '#/files') { location.hash = '#/files'; return; }
-  loadDir(state.cwd, { noPush: true });
+  route();
 });
 document.addEventListener('click', e => {
   const back = e.target.closest('#btn-back');
@@ -179,18 +178,21 @@ async function renderFiles(view) {
   const si = $('#search');
   if (si) {
     si.value = state.searchQ || '';
-    si.onkeydown = e => { if (e.key === 'Enter') doSearch(si.value.trim()); };
+    si.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); doSearch(si.value.trim()); } };
     let timer = null;
     si.oninput = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => {
-        if (!si.value.trim() && state.searchResults) { state.searchQ = ''; state.searchResults = null; renderFilesView(); }
-      }, 260);
+      const v = si.value.trim();
+      if (!v) {
+        if (state.searchResults) { state.searchQ = ''; state.searchResults = null; renderFilesView(); }
+        return;
+      }
+      timer = setTimeout(() => doSearch(v), 450);
     };
   }
 }
 
-async function loadDir(path) {
+async function loadDir(path, opts = {}) {
   try {
     const data = await api('/api/files/list?path=' + encodeURIComponent(path));
     state.cwd = data.path;
@@ -211,16 +213,19 @@ function renderTree() {
   if (!tree) return;
   const roots = state.roots.map(r => `
     <div class="tree-item ${state.cwd === r.path ? 'active' : ''}" data-root="${esc(r.path)}">
-      <span class="ico">📁</span><span class="name">${esc(r.name)}</span>
+      <span class="ico">${folderSVG()}</span><span class="name">${esc(r.name)}</span>
     </div>`).join('');
   const subDirs = state.entries.filter(e => e.is_dir).map(e => `
     <div class="tree-item tree-sub" data-dir="${esc(e.path)}">
-      <span class="ico">📁</span><span class="name">${esc(e.name)}</span>
+      <span class="ico">${folderSVG()}</span><span class="name">${esc(e.name)}</span>
     </div>`).join('');
-  tree.innerHTML = `<div class="tree-title">存储位置</div>${roots}${subDirs ? `<div class="tree-title" style="margin-top:10px">当前目录</div>${subDirs}` : ''}`;
+  const canUp = state.parent && state.parent !== state.cwd && state.parent !== '/';
+  const upBtn = canUp ? `<div class="tree-item" data-up="${esc(state.parent)}"><span class="ico">↑</span><span class="name">返回上一级</span></div>` : '';
+  tree.innerHTML = `<div class="tree-title">存储位置</div>${roots}${upBtn}${subDirs ? `<div class="tree-title" style="margin-top:10px">当前目录</div>${subDirs}` : ''}`;
   $$('#tree .tree-item').forEach(el => {
     el.onclick = () => {
-      if (el.dataset.root) loadDir(el.dataset.root);
+      if (el.dataset.up) loadDir(el.dataset.up);
+      else if (el.dataset.root) loadDir(el.dataset.root);
       else loadDir(el.dataset.dir);
     };
   });
@@ -331,9 +336,15 @@ function renderFilesView() {
       if (card.dataset.dir) { loadDir(card.dataset.dir); return; }
       const path = card.dataset.file;
       if (state.selectMode) { toggleSelect(path); return; }
+      const ext = fileExt(path);
+      const SUPPORTED = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'xlsx', 'xls', 'docx', 'doc', 'txt', 'ods', 'odt'];
+      if (!SUPPORTED.includes(ext)) {
+        toast(`暂不支持 ${ext ? ext.toUpperCase() : '该'} 格式打印，请转换为 PDF 后重试`, 3600);
+        return;
+      }
       openPrintDialog([{ path, name: card.querySelector('.fname').textContent }]);
     };
-    card.oncontextmenu = e => { e.preventDefault(); openFileMenu(card.dataset.file); };
+    if (!card.dataset.dir) card.oncontextmenu = e => { e.preventDefault(); openFileMenu(card.dataset.file); };
   });
   renderFileActions();
 }
@@ -411,7 +422,7 @@ function openPrintDialog(files) {
   const isImage = /\.(jpe?g|png|webp|gif|bmp)$/i.test(first.path);
   const isPDF = /\.pdf$/i.test(first.path);
   const firstExt = fileExt(first.name || first.path);
-  const isOffice = ['xlsx', 'xls', 'docx', 'doc'].includes(firstExt);
+  const isOffice = ['xlsx', 'xls', 'docx', 'doc', 'ods', 'odt'].includes(firstExt);
   const isText = firstExt === 'txt';
   const preview = isImage
     ? `<img src="/api/files/content?path=${encodeURIComponent(first.path)}" alt="">`
@@ -449,7 +460,7 @@ function openPrintDialog(files) {
           <input id="pr-pages" placeholder="全部；例如 1-3,5">
         </label>
         <div class="row2">
-          <label class="field"><span>双面方式</span><select id="pr-duplex-mode">
+          <label class="field" id="pr-duplex-mode-wrap"><span>双面方式</span><select id="pr-duplex-mode">
             <option value="long" selected>长边翻转（书籍）</option>
             <option value="short">短边翻转（便签）</option>
           </select></label>
@@ -487,15 +498,19 @@ function openPrintDialog(files) {
           if (pre) pre.innerHTML = `<div class="hint" style="padding:20px;text-align:center"><span class="spinner"></span> 正在生成预览 ${i}/${n} 页…</div>`;
         });
         state.previewCache = { path: first.path, data };
-        const url = URL.createObjectURL(data.blobs[0].blob);
-        if (pre) {
-          pre.innerHTML = `<div style="width:100%;text-align:center"><img src="${url}" style="max-width:100%;max-height:420px;object-fit:contain"><div class="hint" style="padding:6px">共 ${data.blobs.length} 页 · 预览为第 1 页</div></div>`;
-        }
+        renderPreviewPage(0);
       } catch (e) {
         if (pre) pre.innerHTML = `<div class="hint" style="padding:20px;text-align:center">预览失败：${esc(e.message)}</div>`;
       }
     })();
   }
+  const dupToggle = () => {
+    const wrap = $('#pr-duplex-mode-wrap');
+    const sel = $('#pr-duplex');
+    if (wrap && sel) wrap.style.display = sel.value === 'true' ? 'flex' : 'none';
+  };
+  const dupSel = $('#pr-duplex');
+  if (dupSel) { dupSel.onchange = dupToggle; dupToggle(); }
   $('#pr-cancel').onclick = () => m.classList.remove('open');
   $('#pr-test').onclick = async () => {
     try {
@@ -525,7 +540,7 @@ function openPrintDialog(files) {
       let created = 0;
       for (const f of files) {
         const ext = fileExt(f.name || f.path);
-        if (['xlsx', 'xls', 'docx', 'doc', 'txt'].includes(ext)) {
+        if (['xlsx', 'xls', 'docx', 'doc', 'txt', 'ods', 'odt'].includes(ext)) {
           const cached = state.previewCache && state.previewCache.path === f.path ? state.previewCache.data : null;
           let blobs;
           if (cached) {
@@ -580,7 +595,12 @@ function openPrintDialog(files) {
 
   if (isPDF) {
     loadPdfjs().then(async pdfjs => {
-      const doc = await pdfjs.getDocument({ url: '/api/files/content?path=' + encodeURIComponent(first.path) }).promise;
+      const doc = await pdfjs.getDocument({
+        url: '/api/files/content?path=' + encodeURIComponent(first.path),
+        cMapUrl: '/vendor/pdfjs/cmaps/',
+        cMapPacked: true,
+        standardFontDataUrl: '/vendor/pdfjs/standard_fonts/',
+      }).promise;
       const input = $('#pr-pages');
       if (input) input.placeholder = `全部（共 ${doc.numPages} 页）；例如 1-3,5`;
       try { doc.destroy(); } catch (e) {}
@@ -599,6 +619,35 @@ function loadScriptOnce(src, globalName) {
   });
 }
 
+function renderPreviewPage(idx) {
+  const cache = state.previewCache;
+  const pre = $('#pr-preview');
+  if (!cache || !pre) return;
+  const total = cache.data.blobs.length;
+  idx = Math.max(0, Math.min(idx, total - 1));
+  state.previewCache.index = idx;
+  const url = URL.createObjectURL(cache.data.blobs[idx].blob);
+  const nav = total > 1 ? `<div class="actions" style="justify-content:center;margin-top:8px;flex-wrap:wrap">
+      <button class="btn small" id="pg-prev" ${idx <= 0 ? 'disabled' : ''}>上一页</button>
+      <span class="hint" style="align-self:center">第 ${idx + 1} / ${total} 页</span>
+      <button class="btn small" id="pg-next" ${idx >= total - 1 ? 'disabled' : ''}>下一页</button>
+      <input id="pg-jump" type="number" min="1" max="${total}" value="${idx + 1}" style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);background:var(--card-2);color:var(--text)">
+      <button class="btn small" id="pg-go">跳转</button>
+    </div>` : `<div class="hint" style="padding:6px">共 ${total} 页</div>`;
+  pre.innerHTML = `<div style="width:100%;text-align:center">
+    <img src="${url}" style="max-width:100%;max-height:400px;object-fit:contain">${nav}</div>`;
+  const prev = $('#pg-prev'), next = $('#pg-next');
+  if (prev) prev.onclick = () => renderPreviewPage(idx - 1);
+  if (next) next.onclick = () => renderPreviewPage(idx + 1);
+  const go = $('#pg-go');
+  if (go) go.onclick = () => {
+    const n = parseInt(($('#pg-jump') || {}).value, 10);
+    if (!isNaN(n)) renderPreviewPage(n - 1);
+  };
+  const jump = $('#pg-jump');
+  if (jump) jump.onkeydown = e => { if (e.key === 'Enter') { const n = parseInt(jump.value, 10); if (!isNaN(n)) renderPreviewPage(n - 1); } };
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -606,7 +655,8 @@ function escapeHtml(s) {
 // 把 HTML 渲染为分页 JPEG
 async function renderHtmlToBlobs(html, onProgress) {
   const host = document.createElement('div');
-  host.style.cssText = 'position:fixed;left:0;top:0;z-index:-1;width:1240px;box-sizing:border-box;background:#fff;color:#111;padding:56px;font:16px/1.65 "Microsoft YaHei","PingFang SC",Arial,sans-serif;';
+  host.setAttribute('data-pb-host', '1');
+  host.style.cssText = 'position:fixed;left:-20000px;top:0;width:1240px;box-sizing:border-box;background:#fff;color:#111;padding:56px;font:16px/1.65 "Microsoft YaHei","PingFang SC",Arial,sans-serif;';
   host.innerHTML = `<style>
     h1,h2,h3,h4{font-size:20px;margin:14px 0 8px}
     p{margin:8px 0}
@@ -619,7 +669,14 @@ async function renderHtmlToBlobs(html, onProgress) {
   try {
     const html2canvas = await loadScriptOnce('/vendor/office/html2canvas.min.js', 'html2canvas');
     const width = 1240;
-    const canvas = await html2canvas(host, { scale: 1, backgroundColor: '#ffffff', width, windowWidth: width, logging: false });
+    const canvas = await html2canvas(host, {
+      scale: 1, backgroundColor: '#ffffff', width, windowWidth: width,
+      scrollX: 0, scrollY: 0, logging: false,
+      onclone: doc => {
+        const el = doc.querySelector('[data-pb-host]');
+        if (el) { el.style.position = 'fixed'; el.style.left = '0'; el.style.top = '0'; el.style.zIndex = '0'; }
+      },
+    });
     const pageH = Math.round(width * 1.414);
     const total = Math.max(1, Math.ceil(canvas.height / pageH));
     const blobs = [];
@@ -661,11 +718,15 @@ async function renderDocToBlobs(path, onProgress) {
       const body = rows.map(row => '<tr>' + row.map(cell => `<td>${escapeHtml(cell == null ? '' : String(cell))}</td>`).join('') + '</tr>').join('');
       return `<h3>${escapeHtml(name)}</h3><table>${body}</table>`;
     }).join('<hr style="page-break-after:always;border:none;height:24px">');
+  } else if (ext === 'ods' || ext === 'odt') {
+    html = await odfToHtml(buf, ext);
   } else if (ext === 'docx' || ext === 'doc') {
     const head = new Uint8Array(buf.slice(0, 4));
     const isZip = head[0] === 0x50 && head[1] === 0x4b;
     if (ext === 'doc' && !isZip) {
-      throw new Error('该 .doc 为旧版 Word 格式，浏览器无法解析；请另存为 .docx 或 PDF 后打印');
+      const text = await docToText(buf);
+      const html = `<pre style="white-space:pre-wrap;word-break:break-all;font:14px/1.75 'Microsoft YaHei',sans-serif">${escapeHtml(text)}</pre>`;
+      return renderHtmlToBlobs(html, onProgress);
     }
     const mammoth = await loadScriptOnce('/vendor/office/mammoth.browser.min.js', 'mammoth');
     const result = await mammoth.convertToHtml({ arrayBuffer: buf });
@@ -674,6 +735,132 @@ async function renderDocToBlobs(path, onProgress) {
     throw new Error('暂不支持该类型，请先转换为 PDF');
   }
   return renderHtmlToBlobs(html, onProgress);
+}
+
+// 旧版 .doc（OLE2 复合文档）文本提取
+async function docToText(buf) {
+  const CFB = await loadScriptOnce('/vendor/office/cfb.js', 'CFB');
+  const files = CFB.read(new Uint8Array(buf), { type: 'array' });
+  const find = name => (files.FileIndex || []).find(f => f.name === name);
+  const wd = find('WordDocument');
+  if (!wd) throw new Error('不是有效的 Word 文档');
+  const doc = new Uint8Array(wd.content);
+  const u16 = o => doc[o] | (doc[o + 1] << 8);
+  const u32 = o => (doc[o] | (doc[o + 1] << 8) | (doc[o + 2] << 16) | (doc[o + 3] << 24)) >>> 0;
+  const flags = u16(0x0A);
+  const table = find(((flags >> 9) & 1) ? '1Table' : '0Table');
+  const fcClx = u32(0x01A2), lcbClx = u32(0x01A6);
+  if (!table || !lcbClx) {
+    const fcMin = u32(0x18), fcMac = u32(0x1C);
+    let out = '';
+    for (let i = fcMin; i < fcMac && i < doc.length; i++) out += String.fromCharCode(doc[i]);
+    return cleanWordText(out);
+  }
+  const t = new Uint8Array(table.content);
+  let p = fcClx;
+  const end = Math.min(fcClx + lcbClx, t.length);
+  while (p < end) {
+    const tag = t[p];
+    if (tag === 0x01) {
+      const cb = t[p + 1] | (t[p + 2] << 8);
+      p += 3 + cb;
+    } else if (tag === 0x02) {
+      const lcb = (t[p + 1] | (t[p + 2] << 8) | (t[p + 3] << 16) | (t[p + 4] << 24)) >>> 0;
+      const plc = p + 5;
+      const n = (lcb - 4) / 12;
+      const cps = [];
+      for (let i = 0; i <= n; i++) {
+        cps.push((t[plc + i * 4] | (t[plc + i * 4 + 1] << 8) | (t[plc + i * 4 + 2] << 16) | (t[plc + i * 4 + 3] << 24)) >>> 0);
+      }
+      const pcd = plc + (n + 1) * 4;
+      let out = '';
+      for (let i = 0; i < n; i++) {
+        const chars = cps[i + 1] - cps[i];
+        if (!(chars > 0)) continue;
+        const off = pcd + i * 8;
+        let fc = (t[off + 2] | (t[off + 3] << 8) | (t[off + 4] << 16) | (t[off + 5] << 24)) >>> 0;
+        const compressed = (fc & 0x40000000) !== 0;
+        fc = compressed ? (fc & 0x3FFFFFFF) / 2 : fc;
+        if (compressed) {
+          for (let j = 0; j < chars && fc + j < doc.length; j++) out += String.fromCharCode(doc[fc + j]);
+        } else {
+          for (let j = 0; j < chars && fc + j * 2 + 1 < doc.length; j++) {
+            const o = fc + j * 2;
+            out += String.fromCharCode(doc[o] | (doc[o + 1] << 8));
+          }
+        }
+      }
+      return cleanWordText(out);
+    } else {
+      break;
+    }
+  }
+  throw new Error('无法解析 Word 文档结构');
+}
+
+function cleanWordText(s) {
+  return s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+    .replace(/\r/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+async function odfToHtml(buf, ext) {
+  const fflate = await loadScriptOnce('/vendor/office/fflate.min.js', 'fflate');
+  let files;
+  try { files = fflate.unzipSync(new Uint8Array(buf)); } catch (e) { throw new Error('无法解压 OpenDocument 文件'); }
+  const content = files['content.xml'];
+  if (!content) throw new Error('无法读取 OpenDocument 内容');
+  const xml = new TextDecoder('utf-8').decode(content);
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  if (ext === 'ods') {
+    const tables = doc.getElementsByTagName('table:table');
+    let html = '';
+    for (let ti = 0; ti < tables.length && ti < 8; ti++) {
+      const t = tables[ti];
+      const rows = t.getElementsByTagName('table:table-row');
+      let body = '';
+      for (let ri = 0; ri < rows.length; ri++) {
+        const cells = rows[ri].getElementsByTagName('table:table-cell');
+        let tr = '';
+        for (let ci = 0; ci < cells.length; ci++) {
+          const c = cells[ci];
+          const text = (c.textContent || '').trim();
+          const rep = parseInt(c.getAttribute('table:number-columns-repeated') || '1', 10);
+          const n = Math.min(isNaN(rep) ? 1 : rep, 50);
+          tr += `<td>${escapeHtml(text)}</td>`.repeat(n);
+        }
+        body += `<tr>${tr}</tr>`;
+      }
+      html += `<h3>${escapeHtml(t.getAttribute('table:name') || ('工作表 ' + (ti + 1)))}</h3><table>${body}</table>`;
+    }
+    return html || '<p>（空表格）</p>';
+  }
+  // ODT：按文档顺序输出标题与段落
+  const body = doc.getElementsByTagName('office:text')[0] || doc.documentElement;
+  let html = '';
+  const walk = node => {
+    for (let i = 0; i < node.childNodes.length; i++) {
+      const n = node.childNodes[i];
+      if (n.nodeName === 'text:h') html += `<h3>${escapeHtml((n.textContent || '').trim())}</h3>`;
+      else if (n.nodeName === 'text:p') html += `<p>${escapeHtml((n.textContent || '').trim())}</p>`;
+      else if (n.nodeName === 'table:table') {
+        const rows = n.getElementsByTagName('table:table-row');
+        let tb = '';
+        for (let ri = 0; ri < rows.length; ri++) {
+          const cells = rows[ri].getElementsByTagName('table:table-cell');
+          let tr = '';
+          for (let ci = 0; ci < cells.length; ci++) tr += `<td>${escapeHtml((cells[ci].textContent || '').trim())}</td>`;
+          tb += `<tr>${tr}</tr>`;
+        }
+        html += `<table>${tb}</table>`;
+      } else if (n.childNodes && n.childNodes.length) {
+        walk(n);
+      }
+    }
+  };
+  walk(body);
+  return html || '<p>（空文档）</p>';
 }
 
 async function renderTextToBlobs(path, onProgress) {
@@ -734,14 +921,19 @@ function parsePageInput(input, total) {
 
 async function renderPdfToBlobs(path, pageInput, onProgress) {
   const pdfjs = await loadPdfjs();
-  const doc = await pdfjs.getDocument({ url: '/api/files/content?path=' + encodeURIComponent(path) }).promise;
+  const doc = await pdfjs.getDocument({
+    url: '/api/files/content?path=' + encodeURIComponent(path),
+    cMapUrl: '/vendor/pdfjs/cmaps/',
+    cMapPacked: true,
+    standardFontDataUrl: '/vendor/pdfjs/standard_fonts/',
+  }).promise;
   try {
     const pages = parsePageInput(pageInput, doc.numPages);
     const blobs = [];
     for (let i = 0; i < pages.length; i++) {
       const pageNo = pages[i];
       const page = await doc.getPage(pageNo);
-      const viewport = page.getViewport({ scale: 2 });
+      const viewport = page.getViewport({ scale: 3 });
       const canvas = document.createElement('canvas');
       canvas.width = Math.round(viewport.width);
       canvas.height = Math.round(viewport.height);
@@ -795,6 +987,7 @@ async function loadScanners() {
 }
 
 async function renderScan(view) {
+  view.innerHTML = `<div class="panel"><div class="page-head"><button class="btn ghost small" id="btn-back">← 返回</button><h2 style="margin:0">扫描</h2></div><div class="hint"><span class="spinner"></span> 正在加载扫描仪…</div></div>`;
   await loadScanners();
   view.innerHTML = `<div class="panel">
     <div class="page-head"><button class="btn ghost small" id="btn-back">← 返回</button><h2 style="margin:0">扫描</h2></div>
@@ -1003,6 +1196,7 @@ async function renderHistory(view) {
 
 // ---------- 设置 ----------
 async function renderSettings(view) {
+  view.innerHTML = `<div class="panel"><div class="page-head"><button class="btn ghost small" id="btn-back">← 返回</button><h2 style="margin:0">设置</h2></div><div class="hint"><span class="spinner"></span> 正在加载设置…</div></div>`;
   let status = null;
   if (state.defaultPrinter) {
     try { status = await api('/api/printers/status?ip=' + encodeURIComponent(state.defaultPrinter.ip)); } catch (e) {}
@@ -1283,7 +1477,6 @@ function bindTopbar() {
       return;
     }
     if (e.target.closest('#btn-printer')) { e.preventDefault(); openPrinterDialog(); return; }
-    if (e.target.closest('#btn-select')) { e.preventDefault(); toggleSelectMode(); return; }
   });
 }
 
@@ -1346,8 +1539,9 @@ async function init() {
   bindTopbar();
   const pb = $('#btn-printer');
   if (pb) pb.addEventListener('click', () => openPrinterDialog());
-  const sb = $('#btn-select');
-  if (sb) sb.addEventListener('click', () => toggleSelectMode());
+  $$('#topbar [data-nav]').forEach(el => {
+    el.onclick = e => { e.preventDefault(); if (location.hash !== el.dataset.nav) location.hash = el.dataset.nav; };
+  });
   const hb = $('#btn-home');
   if (hb) hb.addEventListener('click', () => { if ((location.hash || '#/files') !== '#/files') location.hash = '#/files'; else route(); });
   try {

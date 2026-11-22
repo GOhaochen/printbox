@@ -117,7 +117,8 @@ body {
 }
 .tree-item:hover { background: var(--card-2); }
 .tree-item.active { background: rgba(11, 108, 255, .12); color: var(--primary); }
-.tree-item .ico { flex: 0 0 auto; opacity: .8; }
+.tree-item .ico { flex: 0 0 auto; opacity: .95; display: inline-flex; }
+.tree-item .ico .file-ico { width: 20px; height: 20px; }
 .tree-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-sub { padding-left: 16px; }
 
@@ -250,7 +251,7 @@ body {
   .searchbox { order: 3; flex: 1 1 100%; max-width: none; }
   .searchbox input { padding: 10px 14px; border-radius: 12px; }
   .top-actions { order: 2; }
-  #topbar [data-nav="#/scan"], #btn-select { display: none; }
+  #topbar [data-nav="#/scan"], #topbar [data-nav="#/settings"] { display: none; }
   #btn-printer { padding: 7px 12px; }
   #btn-printer #printer-label { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -260,3 +261,7 @@ body {
   .toolbar { gap: 6px; }
   .file-card .file-ico { width: 52px; height: 52px; }
 }
+
+/* 文件页工具栏固定在顶部 */
+.files-main > .toolbar:first-of-type { position: sticky; top: 0; z-index: 6; background: var(--bg); padding: 4px 0 8px; }
+.tree-item[data-up] .ico { font-weight: 700; }

@@ -39,7 +39,7 @@ func kindOf(name string) string {
 		return "pdf"
 	case ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp":
 		return "image"
-	case ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx":
+	case ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".ods", ".odt":
 		return "office"
 	default:
 		return "other"
